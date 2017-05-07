@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.NotServingRegionException;
 import org.apache.hadoop.hbase.ServerName;
@@ -152,11 +153,18 @@ public class UnassignProcedure extends RegionTransitionProcedure {
       return false;
     }
 
-    // Mark the region as closing
+    // Mark the region as CLOSING.
     env.getAssignmentManager().markRegionAsClosing(regionNode);
 
     // Add the close region operation the the server dispatch queue.
-    addToRemoteDispatcher(env, regionNode.getRegionLocation());
+    if (!addToRemoteDispatcher(env, regionNode.getRegionLocation())) {
+      // If addToRemoteDispatcher fails, it calls #remoteCallFailed which
+      // does all cleanup.
+    }
+
+    // We always return true, even if we fail dispatch because addToRemoteDispatcher
+    // failure processing sets state back to REGION_TRANSITION_QUEUE so we try again;
+    // i.e. return true to keep the Procedure running; it has been reset to startover.
     return true;
   }
 
@@ -193,9 +201,13 @@ public class UnassignProcedure extends RegionTransitionProcedure {
     if (exception instanceof ServerCrashException) {
       // This exception comes from ServerCrashProcedure after log splitting.
       // It is ok to let this procedure go on to complete close now.
-      // This will release lock on this region so the subsequent assign
-      // can succeed.
-      setTransitionState(RegionTransitionState.REGION_TRANSITION_FINISH);
+      // This will release lock on this region so the subsequent assign can succeed.
+      try {
+        reportTransition(env, regionNode, TransitionCode.CLOSED, HConstants.NO_SEQNUM);
+      } catch (UnexpectedStateException e) {
+        // Should never happen.
+        throw new RuntimeException(e);
+      }
     } else if (exception instanceof RegionServerAbortedException ||
         exception instanceof RegionServerStoppedException ||
         exception instanceof ServerNotRunningYetException) {

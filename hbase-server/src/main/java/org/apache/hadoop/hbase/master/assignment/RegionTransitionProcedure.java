@@ -47,11 +47,12 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.RegionServerStatusProto
  * <p>This procedure is asynchronous and responds to external events.
  * The AssignmentManager will notify this procedure when the RS completes
  * the operation and reports the transitioned state
- * (see the Assign and Unassign class for more details).
+ * (see the Assign and Unassign class for more detail).
  * <p>Procedures move from the REGION_TRANSITION_QUEUE state when they are
  * first submitted, to the REGION_TRANSITION_DISPATCH state when the request
- * to remote server is done. They end in the REGION_TRANSITION_FINISH state.
- * the 
+ * to remote server is sent and the Procedure is suspended waiting on external
+ * event to be woken again. Once the external event is triggered, Procedure
+ * moves to the REGION_TRANSITION_FINISH state.
  */
 @InterfaceAudience.Private
 public abstract class RegionTransitionProcedure
@@ -123,8 +124,16 @@ public abstract class RegionTransitionProcedure
 
   protected abstract boolean startTransition(MasterProcedureEnv env, RegionStateNode regionNode)
     throws IOException, ProcedureSuspendedException;
+
+  /**
+   * Called when the Procedure is in the REGION_TRANSITION_DISPATCH state.
+   * In here we do the RPC call to OPEN/CLOSE the region. The suspending of
+   * the thread so it sleeps until it gets update that the OPEN/CLOSE has
+   * succeeded is complicated. Read the implementations to learn more.
+   */
   protected abstract boolean updateTransition(MasterProcedureEnv env, RegionStateNode regionNode)
     throws IOException, ProcedureSuspendedException;
+
   protected abstract void finishTransition(MasterProcedureEnv env, RegionStateNode regionNode)
     throws IOException, ProcedureSuspendedException;
 
@@ -150,9 +159,21 @@ public abstract class RegionTransitionProcedure
       exception.getMessage();
     LOG.warn("Failed " + this + "; " + regionNode.toShortString() + "; exception=" + msg);
     remoteCallFailed(env, regionNode, exception);
+    // NOTE: This call to wakeEvent puts this Procedure back on the scheduler.
+    // Thereafter, another Worker can be in here so DO NOT MESS WITH STATE beyond
+    // this method. Just get out of this current processing quickly.
     env.getProcedureScheduler().wakeEvent(regionNode.getProcedureEvent());
   }
 
+  /**
+   * Be careful! At the end of this method, the procedure has either succeeded
+   * and this procedure has been set into a suspended state OR, we failed and
+   * this procedure has been put back on the scheduler ready for another worker
+   * to pick it up. In both cases, we need to exit the current Worker processing
+   * toute de suite!
+   * @return True if we successfully dispatched the call and false if we failed;
+   * if failed, we need to roll back any setup done for the dispatch.
+   */
   protected boolean addToRemoteDispatcher(final MasterProcedureEnv env,
       final ServerName targetServer) {
     assert targetServer.equals(getRegionState(env).getRegionLocation()) :
@@ -162,11 +183,13 @@ public abstract class RegionTransitionProcedure
     LOG.info("Dispatch " + this + "; " + getRegionState(env).toShortString());
 
     // Put this procedure into suspended mode to wait on report of state change
-    // from remote regionserver.
+    // from remote regionserver. Means Procedure associated ProcedureEvent is marked not 'ready'.
     env.getProcedureScheduler().suspendEvent(getRegionState(env).getProcedureEvent());
 
+    // Tricky because this can fail. If it fails need to backtrack on stuff like
+    // the 'suspend' done above -- tricky as the 'wake' requeues us -- and ditto
+    // up in the caller; it needs to undo state changes.
     if (!env.getRemoteDispatcher().addOperationToNode(targetServer, this)) {
-      // Undo the 'suspend' done above.
       remoteCallFailed(env, targetServer,
           new FailedRemoteDispatchException(this + " to " + targetServer));
       return false;
@@ -194,10 +217,11 @@ public abstract class RegionTransitionProcedure
 
     reportTransition(env, regionNode, code, seqId);
 
-    // NOTE: This call actual adds this procedure back on the scheduler.
-    // This makes it so that this procedure may be picked up by another
-    // worker even though another worker may currently be running this
-    // procedure. TODO.
+    // NOTE: This call adds this procedure back on the scheduler.
+    // This makes it so this procedure can run again. Another worker will take
+    // processing to the next stage. At an extreme, the other worker may run in
+    // parallel so DO  NOT CHANGE any state hereafter! This should be last thing
+    // done in this processing step.
     env.getProcedureScheduler().wakeEvent(regionNode.getProcedureEvent());
   }
 

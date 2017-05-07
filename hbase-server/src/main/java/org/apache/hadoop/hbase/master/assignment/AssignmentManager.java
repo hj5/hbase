@@ -839,11 +839,11 @@ public class AssignmentManager implements ServerListener {
       final RegionTransitionProcedure proc = regionNode.getProcedure();
       if (proc == null) return false;
 
-      //serverNode.getReportEvent().removeProcedure(proc);
+      // serverNode.getReportEvent().removeProcedure(proc);
       proc.reportTransition(master.getMasterProcedureExecutor().getEnvironment(),
         serverName, state, seqId);
-      return true;
     }
+    return true;
   }
 
   private void updateRegionSplitTransition(final ServerName serverName, final TransitionCode state,
@@ -1447,12 +1447,16 @@ public class AssignmentManager implements ServerListener {
   }
 
   public void undoRegionAsOpening(final RegionStateNode regionNode) {
-    // TODO: Metrics. Do opposite of metrics.incrementOperationCounter();
+    boolean opening = false;
     synchronized (regionNode) {
       if (regionNode.isInState(State.OPENING)) {
-        regionStates.addRegionToServer(regionNode.getRegionLocation(), regionNode);
+        opening = true;
+        regionStates.removeRegionFromServer(regionNode.getRegionLocation(), regionNode);
       }
       // Should we update hbase:meta?
+    }
+    if (opening) {
+      // TODO: Metrics. Do opposite of metrics.incrementOperationCounter();
     }
   }
 
@@ -1493,6 +1497,11 @@ public class AssignmentManager implements ServerListener {
 
     // update the operation count metrics
     metrics.incrementOperationCounter();
+  }
+
+  public void undoRegionAsClosing(final RegionStateNode regionNode) throws IOException {
+    // TODO: Metrics. Do opposite of metrics.incrementOperationCounter();
+    // There is nothing to undo?
   }
 
   public void markRegionAsClosed(final RegionStateNode regionNode) throws IOException {

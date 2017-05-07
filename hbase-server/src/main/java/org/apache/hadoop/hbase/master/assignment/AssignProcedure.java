@@ -194,23 +194,21 @@ public class AssignProcedure extends RegionTransitionProcedure {
       setTransitionState(RegionTransitionState.REGION_TRANSITION_QUEUE);
       return true;
     } else if (this.server == null) {
-      // Update our server reference to align with regionNode so toString
-      // aligns with what regionNode has.
+      // Update our server reference target to align with regionNode regionLocation
+      if (LOG.isTraceEnabled()) {
+        LOG.trace("Setting tgt=" + regionNode.getRegionLocation() +
+          " from regionStateNode.getRegionLocation " + this + "; " + regionNode.toShortString());
+      }
       this.server = regionNode.getRegionLocation();
     }
 
     if (!isServerOnline(env, regionNode)) {
       // TODO: is this correct? should we wait the chore/ssh?
-      LOG.info("Server not online: " + this + "; " + regionNode.toShortString());
+      LOG.info("Server not online, re-queuing " + this + "; " + regionNode.toShortString());
       setTransitionState(RegionTransitionState.REGION_TRANSITION_QUEUE);
       return true;
     }
 
-    // Wait until server reported. If we have resumed the region may already be assigned.
-    if (LOG.isTraceEnabled()) {
-      LOG.trace("Wait report on " +
-          this /*Full detail on this procedure -- includes server name*/);
-    }
     if (env.getAssignmentManager().waitServerReportEvent(regionNode.getRegionLocation(), this)) {
       LOG.info("Early suspend! " + this + "; " + regionNode.toShortString());
       throw new ProcedureSuspendedException();
@@ -221,15 +219,23 @@ public class AssignProcedure extends RegionTransitionProcedure {
       return false;
     }
 
-    // Set OPENING in hbase:meta and add region to list of regions on server.
+    // Transition regionNode State. Set it to OPENING. Update hbase:meta, and add
+    // region to list of regions on the target regionserver. Need to UNDO if failure!
     env.getAssignmentManager().markRegionAsOpening(regionNode);
 
     // TODO: Requires a migration to be open by the RS?
     // regionNode.getFormatVersion()
 
-    addToRemoteDispatcher(env, regionNode.getRegionLocation());
-    // We always return true, even if we fail dispatch because failiure sets
-    // state back to beginning so we retry assign.
+    if (!addToRemoteDispatcher(env, regionNode.getRegionLocation())) {
+      // Failed the dispatch BUT addToRemoteDispatcher internally does
+      // cleanup on failure -- even the undoing of markRegionAsOpening above --
+      // so nothing more to do here; in fact we need to get out of here
+      // fast since we've been put back on the scheduler.
+    }
+
+    // We always return true, even if we fail dispatch because addToRemoteDispatcher
+    // failure processing sets state back to REGION_TRANSITION_QUEUE so we try again;
+    // i.e. return true to keep the Procedure running; it has been reset to startover.
     return true;
   }
 
@@ -271,6 +277,12 @@ public class AssignProcedure extends RegionTransitionProcedure {
     }
   }
 
+  /**
+   * Called when dispatch or subsequent OPEN request fail. Can be run by the
+   * inline dispatch call or later by the ServerCrashProcedure. Our state is
+   * generally OPENING. Cleanup and reset to OFFLINE and put our Procedure
+   * State back to REGION_TRANSITION_QUEUE so the Assign starts over.
+   */
   private void handleFailure(final MasterProcedureEnv env, final RegionStateNode regionNode) {
     if (incrementAndCheckMaxAttempts(env, regionNode)) {
       aborted.set(true);
@@ -278,6 +290,8 @@ public class AssignProcedure extends RegionTransitionProcedure {
     this.forceNewPlan = true;
     this.server = null;
     regionNode.offline();
+    // We were moved to OPENING state before dispatch. Undo. It is safe to call
+    // this method because it checks for OPENING first.
     env.getAssignmentManager().undoRegionAsOpening(regionNode);
     setTransitionState(RegionTransitionState.REGION_TRANSITION_QUEUE);
   }

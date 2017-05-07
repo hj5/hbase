@@ -84,6 +84,10 @@ public class RegionStates {
     }
   }
 
+  /**
+   * Current Region State.
+   * In-memory only. Not persisted.
+   */
   // Mutable/Immutable? Changes have to be synchronized or not?
   // Data members are volatile which seems to say multi-threaded access is fine.
   // In the below we do check and set but the check state could change before

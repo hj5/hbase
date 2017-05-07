@@ -1640,7 +1640,7 @@ public class ProcedureExecutor<TEnvironment> {
           int activeCount = activeExecutorCount.incrementAndGet();
           int runningCount = store.setRunningProcedureCount(activeCount);
           if (LOG.isDebugEnabled()) {
-            LOG.debug("Run pid=" + procedure.getProcId() +
+            LOG.debug("Execute pid=" + procedure.getProcId() +
                 " runningCount=" + runningCount + ", activeCount=" + activeCount);
           }
           executionStartTime.set(EnvironmentEdgeManager.currentTime());
@@ -1653,7 +1653,7 @@ public class ProcedureExecutor<TEnvironment> {
             activeCount = activeExecutorCount.decrementAndGet();
             runningCount = store.setRunningProcedureCount(activeCount);
             if (LOG.isDebugEnabled()) {
-              LOG.debug("Done pid=" + procedure.getProcId() +
+              LOG.debug("Leave pid=" + procedure.getProcId() +
                   " runningCount=" + runningCount + ", activeCount=" + activeCount);
             }
             lastUpdate = EnvironmentEdgeManager.currentTime();
