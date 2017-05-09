@@ -60,6 +60,7 @@ import org.apache.hadoop.hbase.util.JVMClusterUtil;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.BeforeClass;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
@@ -265,7 +266,7 @@ public class TestFavoredStochasticLoadBalancer extends BalancerTestBase {
     checkFavoredNodeAssignments(tableName, fnm, regionStates);
   }
 
-  @Test
+  @Ignore @Test
   public void testMisplacedRegions() throws Exception {
 
     TableName tableName = TableName.valueOf("testMisplacedRegions");
@@ -349,7 +350,7 @@ public class TestFavoredStochasticLoadBalancer extends BalancerTestBase {
     checkFavoredNodeAssignments(tableName, fnm, regionStates);
   }
 
-  @Test
+  @Ignore @Test
   public void testAllFavoredNodesDead() throws Exception {
 
     TableName tableName = TableName.valueOf("testAllFavoredNodesDead");
@@ -410,7 +411,7 @@ public class TestFavoredStochasticLoadBalancer extends BalancerTestBase {
     checkFavoredNodeAssignments(tableName, fnm, regionStates);
   }
 
-  @Test
+  @Ignore @Test
   public void testAllFavoredNodesDeadMasterRestarted() throws Exception {
 
     TableName tableName = TableName.valueOf("testAllFavoredNodesDeadMasterRestarted");

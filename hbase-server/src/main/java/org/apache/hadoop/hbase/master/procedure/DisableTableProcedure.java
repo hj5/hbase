@@ -236,7 +236,7 @@ public class DisableTableProcedure
       // set the state later on). A quick state check should be enough for us to move forward.
       TableStateManager tsm = env.getMasterServices().getTableStateManager();
       TableState.State state = tsm.getTableState(tableName);
-      if(!state.equals(TableState.State.ENABLED)){
+      if (!state.equals(TableState.State.ENABLED)){
         LOG.info("Table " + tableName + " isn't enabled;is "+state.name()+"; skipping disable");
         setFailure("master-disable-table", new TableNotEnabledException(
                 tableName+" state is "+state.name()));

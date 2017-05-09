@@ -104,7 +104,13 @@ public class RegionStates {
     private volatile ServerName regionLocation = null;
     private volatile ServerName lastHost = null;
     private volatile State state = State.OFFLINE;
+
+    /**
+     * Updated whenever a call to {@link #setRegionLocation(ServerName)}
+     * or {@link #setState(State, State...)}.
+     */
     private volatile long lastUpdate = 0;
+
     private volatile long openSeqNum = HConstants.NO_SEQNUM;
 
     public RegionStateNode(final HRegionInfo regionInfo) {
@@ -116,6 +122,7 @@ public class RegionStates {
       final boolean expectedState = isInState(expected);
       if (expectedState) {
         this.state = update;
+        this.lastUpdate = EnvironmentEdgeManager.currentTime();
       }
       return expectedState;
     }
@@ -146,7 +153,7 @@ public class RegionStates {
       if (expected != null && expected.length > 0) {
         boolean expectedState = false;
         for (int i = 0; i < expected.length; ++i) {
-          expectedState |= (state == expected[i]);
+          expectedState |= (getState() == expected[i]);
         }
         return expectedState;
       }

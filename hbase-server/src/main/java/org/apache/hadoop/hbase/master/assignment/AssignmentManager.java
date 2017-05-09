@@ -83,6 +83,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.RegionServerStatusProto
 import org.apache.hadoop.hbase.shaded.protobuf.generated.RegionServerStatusProtos.ReportRegionStateTransitionRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.RegionServerStatusProtos.ReportRegionStateTransitionResponse;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.EnvironmentEdge;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.util.Threads;
@@ -831,6 +832,7 @@ public class AssignmentManager implements ServerListener {
     }
   }
 
+  // FYI: regionNode is sometimes synchronized by the caller but not always.
   private boolean reportTransition(final RegionStateNode regionNode,
       final ServerStateNode serverNode, final TransitionCode state, final long seqId)
       throws UnexpectedStateException {
@@ -988,18 +990,15 @@ public class AssignmentManager implements ServerListener {
     }
   }
 
-  public void checkOnlineRegionsReport(final ServerStateNode serverNode,
-      final Set<byte[]> regionNames) {
+  void checkOnlineRegionsReport(final ServerStateNode serverNode, final Set<byte[]> regionNames) {
     final ServerName serverName = serverNode.getServerName();
     try {
       for (byte[] regionName: regionNames) {
         if (!isRunning()) return;
-
         final RegionStateNode regionNode = regionStates.getRegionNodeFromName(regionName);
         if (regionNode == null) {
           throw new UnexpectedStateException("Not online: " + Bytes.toStringBinary(regionName));
         }
-
         synchronized (regionNode) {
           if (regionNode.isInState(State.OPENING, State.OPEN)) {
             if (!regionNode.getRegionLocation().equals(serverName)) {
@@ -1017,9 +1016,14 @@ public class AssignmentManager implements ServerListener {
               }
             }
           } else if (!regionNode.isInState(State.CLOSING, State.SPLITTING)) {
-            // TODO: We end up killing the RS if we get a report while we already
-            // transitioned to close or split. we should have a timeout/timestamp to compare
-            throw new UnexpectedStateException(regionNode.toString() + " reported unexpected OPEN");
+            long diff = regionNode.getLastUpdate() - EnvironmentEdgeManager.currentTime();
+            if (diff > 1000/*One Second... make configurable if an issue*/) {
+              // So, we can get report that a region is CLOSED or SPLIT because a heartbeat
+              // came in at about same time as a region transition. Make sure there is some
+              // elapsed time between killing remote server.
+              throw new UnexpectedStateException(regionNode.toString() +
+                " reported an unexpected OPEN; time since last update=" + diff);
+            }
           }
         }
       }
@@ -1804,9 +1808,10 @@ public class AssignmentManager implements ServerListener {
   }
 
   public void killRegionServer(final ServerStateNode serverNode) {
+    /** Don't do this. Messes up accounting. Let ServerCrashProcedure do this.
     for (RegionStateNode regionNode: serverNode.getRegions()) {
       regionNode.offline();
-    }
+    }*/
     master.getServerManager().expireServer(serverNode.getServerName());
   }
 }
