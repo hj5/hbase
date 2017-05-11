@@ -38,6 +38,10 @@ message GetRegionInfoResponse {
   required RegionInfo region_info = 1;
   optional CompactionState compaction_state = 2;
   optional bool isRecovering = 3;
+  // True if region is splittable, false otherwise.
+  optional bool splittable = 4;
+  // True if region is mergeable, false otherwise.
+  optional bool mergeable = 5;
 
   enum CompactionState {
     NONE = 0;

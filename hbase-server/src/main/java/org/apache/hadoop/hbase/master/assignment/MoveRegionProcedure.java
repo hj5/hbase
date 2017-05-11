@@ -29,10 +29,9 @@ import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
-import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
-import org.apache.hadoop.hbase.master.procedure.TableProcedureInterface;
 import org.apache.hadoop.hbase.master.RegionPlan;
-import org.apache.hadoop.hbase.procedure2.StateMachineProcedure;
+import org.apache.hadoop.hbase.master.procedure.AbstractStateMachineRegionProcedure;
+import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos.MoveRegionState;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos.MoveRegionStateData;
@@ -40,14 +39,12 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos.M
 /**
  * Procedure that implements a RegionPlan.
  * It first runs an unassign subprocedure followed
- * by an assign subprocedure.
+ * by an assign subprocedure. It takes a lock on the region being moved.
+ * It holds the lock for the life of the procedure.
  */
 @InterfaceAudience.Private
-public class MoveRegionProcedure
-    extends StateMachineProcedure<MasterProcedureEnv, MoveRegionState>
-    implements TableProcedureInterface {
+public class MoveRegionProcedure extends AbstractStateMachineRegionProcedure<MoveRegionState> {
   private static final Log LOG = LogFactory.getLog(MoveRegionProcedure.class);
-
   private RegionPlan plan;
 
   public MoveRegionProcedure() {
@@ -58,15 +55,6 @@ public class MoveRegionProcedure
   public MoveRegionProcedure(final RegionPlan plan) {
     assert plan.getDestination() != null: plan.toString();
     this.plan = plan;
-  }
-
-  @Override
-  protected boolean holdLock(MasterProcedureEnv env) {
-    // Hold the lock for the duration of the move otherwise something like
-    // a call to split might come in when we do not hold the lock; i.e.
-    // at the point between completion of unassign and before we do the
-    // assign step (I've seen it in test).
-    return true;
   }
 
   @Override

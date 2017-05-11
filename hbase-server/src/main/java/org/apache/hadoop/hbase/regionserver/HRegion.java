@@ -1380,14 +1380,12 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     return !isClosed() && !isClosing();
   }
 
-  /** @return true if region is splittable */
+  @Override
   public boolean isSplittable() {
     return isAvailable() && !hasReferences();
   }
 
-  /**
-   * @return true if region is mergeable
-   */
+  @Override
   public boolean isMergeable() {
     if (!isAvailable()) {
       LOG.debug("Region " + this

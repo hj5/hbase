@@ -275,7 +275,7 @@ public class DispatchMergingRegionsProcedure
 
   @Override
   public TableOperationType getTableOperationType() {
-    return TableOperationType.MERGE;
+    return TableOperationType.REGION_MERGE;
   }
 
   /**

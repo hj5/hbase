@@ -39686,10 +39686,18 @@ public final class MasterProtos {
       org.apache.hadoop.hbase.shaded.com.google.protobuf.MessageOrBuilder {
 
     /**
+     * <pre>
+     * This is how many archiving tasks we started as a result of this scan.
+     * </pre>
+     *
      * <code>optional int32 scan_result = 1;</code>
      */
     boolean hasScanResult();
     /**
+     * <pre>
+     * This is how many archiving tasks we started as a result of this scan.
+     * </pre>
+     *
      * <code>optional int32 scan_result = 1;</code>
      */
     int getScanResult();
@@ -39770,12 +39778,20 @@ public final class MasterProtos {
     public static final int SCAN_RESULT_FIELD_NUMBER = 1;
     private int scanResult_;
     /**
+     * <pre>
+     * This is how many archiving tasks we started as a result of this scan.
+     * </pre>
+     *
      * <code>optional int32 scan_result = 1;</code>
      */
     public boolean hasScanResult() {
       return ((bitField0_ & 0x00000001) == 0x00000001);
     }
     /**
+     * <pre>
+     * This is how many archiving tasks we started as a result of this scan.
+     * </pre>
+     *
      * <code>optional int32 scan_result = 1;</code>
      */
     public int getScanResult() {
@@ -40069,18 +40085,30 @@ public final class MasterProtos {
 
       private int scanResult_ ;
       /**
+       * <pre>
+       * This is how many archiving tasks we started as a result of this scan.
+       * </pre>
+       *
        * <code>optional int32 scan_result = 1;</code>
        */
       public boolean hasScanResult() {
         return ((bitField0_ & 0x00000001) == 0x00000001);
       }
       /**
+       * <pre>
+       * This is how many archiving tasks we started as a result of this scan.
+       * </pre>
+       *
        * <code>optional int32 scan_result = 1;</code>
        */
       public int getScanResult() {
         return scanResult_;
       }
       /**
+       * <pre>
+       * This is how many archiving tasks we started as a result of this scan.
+       * </pre>
+       *
        * <code>optional int32 scan_result = 1;</code>
        */
       public Builder setScanResult(int value) {
@@ -40090,6 +40118,10 @@ public final class MasterProtos {
         return this;
       }
       /**
+       * <pre>
+       * This is how many archiving tasks we started as a result of this scan.
+       * </pre>
+       *
        * <code>optional int32 scan_result = 1;</code>
        */
       public Builder clearScanResult() {

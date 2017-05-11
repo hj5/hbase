@@ -65,6 +65,11 @@ import org.apache.hadoop.hbase.regionserver.RegionServerStoppedException;
 public class UnassignProcedure extends RegionTransitionProcedure {
   private static final Log LOG = LogFactory.getLog(UnassignProcedure.class);
 
+  /**
+   * Where to send the unassign RPC.
+   */
+  protected volatile ServerName destinationServer;
+
   private final AtomicBoolean serverCrashed = new AtomicBoolean(false);
 
   // TODO: should this be in a reassign procedure?
@@ -77,9 +82,9 @@ public class UnassignProcedure extends RegionTransitionProcedure {
   }
 
   public UnassignProcedure(final HRegionInfo regionInfo,
-      final ServerName server, final boolean force) {
+      final ServerName destinationServer, final boolean force) {
     super(regionInfo);
-    this.server = server;
+    this.destinationServer = destinationServer;
     this.force = force;
 
     // we don't need REGION_TRANSITION_QUEUE, we jump directly to sending the request
@@ -88,7 +93,7 @@ public class UnassignProcedure extends RegionTransitionProcedure {
 
   @Override
   public TableOperationType getTableOperationType() {
-    return TableOperationType.UNASSIGN;
+    return TableOperationType.REGION_UNASSIGN;
   }
 
   @Override
@@ -106,7 +111,7 @@ public class UnassignProcedure extends RegionTransitionProcedure {
   public void serializeStateData(final OutputStream stream) throws IOException {
     UnassignRegionStateData.Builder state = UnassignRegionStateData.newBuilder()
         .setTransitionState(getTransitionState())
-        .setDestinationServer(ProtobufUtil.toServerName(server))
+        .setDestinationServer(ProtobufUtil.toServerName(destinationServer))
         .setRegionInfo(HRegionInfo.convert(getRegionInfo()));
     if (force) {
       state.setForce(true);
@@ -121,7 +126,7 @@ public class UnassignProcedure extends RegionTransitionProcedure {
     setRegionInfo(HRegionInfo.convert(state.getRegionInfo()));
     force = state.getForce();
     if (state.hasDestinationServer()) {
-      server = ProtobufUtil.toServerName(state.getDestinationServer());
+      this.destinationServer = ProtobufUtil.toServerName(state.getDestinationServer());
     }
   }
 
@@ -177,7 +182,7 @@ public class UnassignProcedure extends RegionTransitionProcedure {
   @Override
   public RemoteOperation remoteCallBuild(final MasterProcedureEnv env, final ServerName serverName) {
     assert serverName.equals(getRegionState(env).getRegionLocation());
-    return new RegionCloseOperation(this, getRegionInfo(), server);
+    return new RegionCloseOperation(this, getRegionInfo(), destinationServer);
   }
 
   @Override
@@ -227,5 +232,11 @@ public class UnassignProcedure extends RegionTransitionProcedure {
       env.getMasterServices().getServerManager().expireServer(regionNode.getRegionLocation());
       serverCrashed.set(true);
     }
+  }
+
+  @Override
+  public void toStringClassDetails(StringBuilder sb) {
+    super.toStringClassDetails(sb);
+    sb.append(", server=").append(this.destinationServer);
   }
 }

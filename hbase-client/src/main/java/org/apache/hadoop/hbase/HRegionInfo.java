@@ -168,6 +168,10 @@ public class HRegionInfo implements Comparable<HRegionInfo> {
     return prettyPrint(this.getEncodedName());
   }
 
+  public static String getShortNameToLog(HRegionInfo...hris) {
+    return getShortNameToLog(Arrays.asList(hris));
+  }
+
   /**
    * @return Return a String of short, printable names for <code>hris</code>
    * (usually encoded name) for us logging.

@@ -599,8 +599,6 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
     /**
      * Return true if the placement of region on server would lower the availability
      * of the region in question
-     * @param server
-     * @param region
      * @return true or false
      */
     boolean wouldLowerAvailability(HRegionInfo regionInfo, ServerName serverName) {

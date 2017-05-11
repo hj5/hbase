@@ -365,6 +365,7 @@ message RunCatalogScanRequest {
 }
 
 message RunCatalogScanResponse {
+  // This is how many archiving tasks we started as a result of this scan.
   optional int32 scan_result = 1;
 }
 

@@ -728,6 +728,40 @@ public final class AdminProtos {
      * <code>optional bool isRecovering = 3;</code>
      */
     boolean getIsRecovering();
+
+    /**
+     * <pre>
+     * True if region is splittable, false otherwise.
+     * </pre>
+     *
+     * <code>optional bool splittable = 4;</code>
+     */
+    boolean hasSplittable();
+    /**
+     * <pre>
+     * True if region is splittable, false otherwise.
+     * </pre>
+     *
+     * <code>optional bool splittable = 4;</code>
+     */
+    boolean getSplittable();
+
+    /**
+     * <pre>
+     * True if region is mergeable, false otherwise.
+     * </pre>
+     *
+     * <code>optional bool mergeable = 5;</code>
+     */
+    boolean hasMergeable();
+    /**
+     * <pre>
+     * True if region is mergeable, false otherwise.
+     * </pre>
+     *
+     * <code>optional bool mergeable = 5;</code>
+     */
+    boolean getMergeable();
   }
   /**
    * Protobuf type {@code hbase.pb.GetRegionInfoResponse}
@@ -743,6 +777,8 @@ public final class AdminProtos {
     private GetRegionInfoResponse() {
       compactionState_ = 0;
       isRecovering_ = false;
+      splittable_ = false;
+      mergeable_ = false;
     }
 
     @java.lang.Override
@@ -800,6 +836,16 @@ public final class AdminProtos {
             case 24: {
               bitField0_ |= 0x00000004;
               isRecovering_ = input.readBool();
+              break;
+            }
+            case 32: {
+              bitField0_ |= 0x00000008;
+              splittable_ = input.readBool();
+              break;
+            }
+            case 40: {
+              bitField0_ |= 0x00000010;
+              mergeable_ = input.readBool();
               break;
             }
           }
@@ -987,6 +1033,52 @@ public final class AdminProtos {
       return isRecovering_;
     }
 
+    public static final int SPLITTABLE_FIELD_NUMBER = 4;
+    private boolean splittable_;
+    /**
+     * <pre>
+     * True if region is splittable, false otherwise.
+     * </pre>
+     *
+     * <code>optional bool splittable = 4;</code>
+     */
+    public boolean hasSplittable() {
+      return ((bitField0_ & 0x00000008) == 0x00000008);
+    }
+    /**
+     * <pre>
+     * True if region is splittable, false otherwise.
+     * </pre>
+     *
+     * <code>optional bool splittable = 4;</code>
+     */
+    public boolean getSplittable() {
+      return splittable_;
+    }
+
+    public static final int MERGEABLE_FIELD_NUMBER = 5;
+    private boolean mergeable_;
+    /**
+     * <pre>
+     * True if region is mergeable, false otherwise.
+     * </pre>
+     *
+     * <code>optional bool mergeable = 5;</code>
+     */
+    public boolean hasMergeable() {
+      return ((bitField0_ & 0x00000010) == 0x00000010);
+    }
+    /**
+     * <pre>
+     * True if region is mergeable, false otherwise.
+     * </pre>
+     *
+     * <code>optional bool mergeable = 5;</code>
+     */
+    public boolean getMergeable() {
+      return mergeable_;
+    }
+
     private byte memoizedIsInitialized = -1;
     public final boolean isInitialized() {
       byte isInitialized = memoizedIsInitialized;
@@ -1016,6 +1108,12 @@ public final class AdminProtos {
       if (((bitField0_ & 0x00000004) == 0x00000004)) {
         output.writeBool(3, isRecovering_);
       }
+      if (((bitField0_ & 0x00000008) == 0x00000008)) {
+        output.writeBool(4, splittable_);
+      }
+      if (((bitField0_ & 0x00000010) == 0x00000010)) {
+        output.writeBool(5, mergeable_);
+      }
       unknownFields.writeTo(output);
     }
 
@@ -1035,6 +1133,14 @@ public final class AdminProtos {
       if (((bitField0_ & 0x00000004) == 0x00000004)) {
         size += org.apache.hadoop.hbase.shaded.com.google.protobuf.CodedOutputStream
           .computeBoolSize(3, isRecovering_);
+      }
+      if (((bitField0_ & 0x00000008) == 0x00000008)) {
+        size += org.apache.hadoop.hbase.shaded.com.google.protobuf.CodedOutputStream
+          .computeBoolSize(4, splittable_);
+      }
+      if (((bitField0_ & 0x00000010) == 0x00000010)) {
+        size += org.apache.hadoop.hbase.shaded.com.google.protobuf.CodedOutputStream
+          .computeBoolSize(5, mergeable_);
       }
       size += unknownFields.getSerializedSize();
       memoizedSize = size;
@@ -1067,6 +1173,16 @@ public final class AdminProtos {
         result = result && (getIsRecovering()
             == other.getIsRecovering());
       }
+      result = result && (hasSplittable() == other.hasSplittable());
+      if (hasSplittable()) {
+        result = result && (getSplittable()
+            == other.getSplittable());
+      }
+      result = result && (hasMergeable() == other.hasMergeable());
+      if (hasMergeable()) {
+        result = result && (getMergeable()
+            == other.getMergeable());
+      }
       result = result && unknownFields.equals(other.unknownFields);
       return result;
     }
@@ -1090,6 +1206,16 @@ public final class AdminProtos {
         hash = (37 * hash) + ISRECOVERING_FIELD_NUMBER;
         hash = (53 * hash) + org.apache.hadoop.hbase.shaded.com.google.protobuf.Internal.hashBoolean(
             getIsRecovering());
+      }
+      if (hasSplittable()) {
+        hash = (37 * hash) + SPLITTABLE_FIELD_NUMBER;
+        hash = (53 * hash) + org.apache.hadoop.hbase.shaded.com.google.protobuf.Internal.hashBoolean(
+            getSplittable());
+      }
+      if (hasMergeable()) {
+        hash = (37 * hash) + MERGEABLE_FIELD_NUMBER;
+        hash = (53 * hash) + org.apache.hadoop.hbase.shaded.com.google.protobuf.Internal.hashBoolean(
+            getMergeable());
       }
       hash = (29 * hash) + unknownFields.hashCode();
       memoizedHashCode = hash;
@@ -1220,6 +1346,10 @@ public final class AdminProtos {
         bitField0_ = (bitField0_ & ~0x00000002);
         isRecovering_ = false;
         bitField0_ = (bitField0_ & ~0x00000004);
+        splittable_ = false;
+        bitField0_ = (bitField0_ & ~0x00000008);
+        mergeable_ = false;
+        bitField0_ = (bitField0_ & ~0x00000010);
         return this;
       }
 
@@ -1260,6 +1390,14 @@ public final class AdminProtos {
           to_bitField0_ |= 0x00000004;
         }
         result.isRecovering_ = isRecovering_;
+        if (((from_bitField0_ & 0x00000008) == 0x00000008)) {
+          to_bitField0_ |= 0x00000008;
+        }
+        result.splittable_ = splittable_;
+        if (((from_bitField0_ & 0x00000010) == 0x00000010)) {
+          to_bitField0_ |= 0x00000010;
+        }
+        result.mergeable_ = mergeable_;
         result.bitField0_ = to_bitField0_;
         onBuilt();
         return result;
@@ -1310,6 +1448,12 @@ public final class AdminProtos {
         }
         if (other.hasIsRecovering()) {
           setIsRecovering(other.getIsRecovering());
+        }
+        if (other.hasSplittable()) {
+          setSplittable(other.getSplittable());
+        }
+        if (other.hasMergeable()) {
+          setMergeable(other.getMergeable());
         }
         this.mergeUnknownFields(other.unknownFields);
         onChanged();
@@ -1527,6 +1671,102 @@ public final class AdminProtos {
       public Builder clearIsRecovering() {
         bitField0_ = (bitField0_ & ~0x00000004);
         isRecovering_ = false;
+        onChanged();
+        return this;
+      }
+
+      private boolean splittable_ ;
+      /**
+       * <pre>
+       * True if region is splittable, false otherwise.
+       * </pre>
+       *
+       * <code>optional bool splittable = 4;</code>
+       */
+      public boolean hasSplittable() {
+        return ((bitField0_ & 0x00000008) == 0x00000008);
+      }
+      /**
+       * <pre>
+       * True if region is splittable, false otherwise.
+       * </pre>
+       *
+       * <code>optional bool splittable = 4;</code>
+       */
+      public boolean getSplittable() {
+        return splittable_;
+      }
+      /**
+       * <pre>
+       * True if region is splittable, false otherwise.
+       * </pre>
+       *
+       * <code>optional bool splittable = 4;</code>
+       */
+      public Builder setSplittable(boolean value) {
+        bitField0_ |= 0x00000008;
+        splittable_ = value;
+        onChanged();
+        return this;
+      }
+      /**
+       * <pre>
+       * True if region is splittable, false otherwise.
+       * </pre>
+       *
+       * <code>optional bool splittable = 4;</code>
+       */
+      public Builder clearSplittable() {
+        bitField0_ = (bitField0_ & ~0x00000008);
+        splittable_ = false;
+        onChanged();
+        return this;
+      }
+
+      private boolean mergeable_ ;
+      /**
+       * <pre>
+       * True if region is mergeable, false otherwise.
+       * </pre>
+       *
+       * <code>optional bool mergeable = 5;</code>
+       */
+      public boolean hasMergeable() {
+        return ((bitField0_ & 0x00000010) == 0x00000010);
+      }
+      /**
+       * <pre>
+       * True if region is mergeable, false otherwise.
+       * </pre>
+       *
+       * <code>optional bool mergeable = 5;</code>
+       */
+      public boolean getMergeable() {
+        return mergeable_;
+      }
+      /**
+       * <pre>
+       * True if region is mergeable, false otherwise.
+       * </pre>
+       *
+       * <code>optional bool mergeable = 5;</code>
+       */
+      public Builder setMergeable(boolean value) {
+        bitField0_ |= 0x00000010;
+        mergeable_ = value;
+        onChanged();
+        return this;
+      }
+      /**
+       * <pre>
+       * True if region is mergeable, false otherwise.
+       * </pre>
+       *
+       * <code>optional bool mergeable = 5;</code>
+       */
+      public Builder clearMergeable() {
+        bitField0_ = (bitField0_ & ~0x00000010);
+        mergeable_ = false;
         onChanged();
         return this;
       }
@@ -28886,129 +29126,130 @@ public final class AdminProtos {
       "roto\032\013HBase.proto\032\tWAL.proto\"[\n\024GetRegio" +
       "nInfoRequest\022)\n\006region\030\001 \002(\0132\031.hbase.pb." +
       "RegionSpecifier\022\030\n\020compaction_state\030\002 \001(" +
-      "\010\"\353\001\n\025GetRegionInfoResponse\022)\n\013region_in" +
+      "\010\"\222\002\n\025GetRegionInfoResponse\022)\n\013region_in" +
       "fo\030\001 \002(\0132\024.hbase.pb.RegionInfo\022I\n\020compac" +
       "tion_state\030\002 \001(\0162/.hbase.pb.GetRegionInf" +
       "oResponse.CompactionState\022\024\n\014isRecoverin" +
-      "g\030\003 \001(\010\"F\n\017CompactionState\022\010\n\004NONE\020\000\022\t\n\005" +
-      "MINOR\020\001\022\t\n\005MAJOR\020\002\022\023\n\017MAJOR_AND_MINOR\020\003\"",
-      "P\n\023GetStoreFileRequest\022)\n\006region\030\001 \002(\0132\031" +
-      ".hbase.pb.RegionSpecifier\022\016\n\006family\030\002 \003(" +
-      "\014\"*\n\024GetStoreFileResponse\022\022\n\nstore_file\030" +
-      "\001 \003(\t\"\030\n\026GetOnlineRegionRequest\"D\n\027GetOn" +
-      "lineRegionResponse\022)\n\013region_info\030\001 \003(\0132" +
-      "\024.hbase.pb.RegionInfo\"\263\002\n\021OpenRegionRequ" +
-      "est\022=\n\topen_info\030\001 \003(\0132*.hbase.pb.OpenRe" +
-      "gionRequest.RegionOpenInfo\022\027\n\017serverStar" +
-      "tCode\030\002 \001(\004\022\032\n\022master_system_time\030\005 \001(\004\032" +
-      "\251\001\n\016RegionOpenInfo\022$\n\006region\030\001 \002(\0132\024.hba",
-      "se.pb.RegionInfo\022\037\n\027version_of_offline_n" +
-      "ode\030\002 \001(\r\022+\n\rfavored_nodes\030\003 \003(\0132\024.hbase" +
-      ".pb.ServerName\022#\n\033openForDistributedLogR" +
-      "eplay\030\004 \001(\010\"\246\001\n\022OpenRegionResponse\022F\n\rop" +
-      "ening_state\030\001 \003(\0162/.hbase.pb.OpenRegionR" +
-      "esponse.RegionOpeningState\"H\n\022RegionOpen" +
-      "ingState\022\n\n\006OPENED\020\000\022\022\n\016ALREADY_OPENED\020\001" +
-      "\022\022\n\016FAILED_OPENING\020\002\"?\n\023WarmupRegionRequ" +
-      "est\022(\n\nregionInfo\030\001 \002(\0132\024.hbase.pb.Regio" +
-      "nInfo\"\026\n\024WarmupRegionResponse\"\313\001\n\022CloseR",
-      "egionRequest\022)\n\006region\030\001 \002(\0132\031.hbase.pb." +
-      "RegionSpecifier\022\037\n\027version_of_closing_no" +
-      "de\030\002 \001(\r\022\036\n\020transition_in_ZK\030\003 \001(\010:\004true" +
-      "\0220\n\022destination_server\030\004 \001(\0132\024.hbase.pb." +
-      "ServerName\022\027\n\017serverStartCode\030\005 \001(\004\"%\n\023C" +
-      "loseRegionResponse\022\016\n\006closed\030\001 \002(\010\"y\n\022Fl" +
-      "ushRegionRequest\022)\n\006region\030\001 \002(\0132\031.hbase" +
-      ".pb.RegionSpecifier\022\030\n\020if_older_than_ts\030" +
-      "\002 \001(\004\022\036\n\026write_flush_wal_marker\030\003 \001(\010\"_\n" +
-      "\023FlushRegionResponse\022\027\n\017last_flush_time\030",
-      "\001 \002(\004\022\017\n\007flushed\030\002 \001(\010\022\036\n\026wrote_flush_wa" +
-      "l_marker\030\003 \001(\010\"T\n\022SplitRegionRequest\022)\n\006" +
-      "region\030\001 \002(\0132\031.hbase.pb.RegionSpecifier\022" +
-      "\023\n\013split_point\030\002 \001(\014\"\025\n\023SplitRegionRespo" +
-      "nse\"`\n\024CompactRegionRequest\022)\n\006region\030\001 " +
-      "\002(\0132\031.hbase.pb.RegionSpecifier\022\r\n\005major\030" +
-      "\002 \001(\010\022\016\n\006family\030\003 \001(\014\"\027\n\025CompactRegionRe" +
-      "sponse\"\315\001\n\031UpdateFavoredNodesRequest\022I\n\013" +
-      "update_info\030\001 \003(\01324.hbase.pb.UpdateFavor" +
-      "edNodesRequest.RegionUpdateInfo\032e\n\020Regio",
-      "nUpdateInfo\022$\n\006region\030\001 \002(\0132\024.hbase.pb.R" +
-      "egionInfo\022+\n\rfavored_nodes\030\002 \003(\0132\024.hbase" +
-      ".pb.ServerName\".\n\032UpdateFavoredNodesResp" +
-      "onse\022\020\n\010response\030\001 \001(\r\"a\n\010WALEntry\022\035\n\003ke" +
-      "y\030\001 \002(\0132\020.hbase.pb.WALKey\022\027\n\017key_value_b" +
-      "ytes\030\002 \003(\014\022\035\n\025associated_cell_count\030\003 \001(" +
-      "\005\"\242\001\n\030ReplicateWALEntryRequest\022!\n\005entry\030" +
-      "\001 \003(\0132\022.hbase.pb.WALEntry\022\034\n\024replication" +
-      "ClusterId\030\002 \001(\t\022\"\n\032sourceBaseNamespaceDi" +
-      "rPath\030\003 \001(\t\022!\n\031sourceHFileArchiveDirPath",
-      "\030\004 \001(\t\"\033\n\031ReplicateWALEntryResponse\"\026\n\024R" +
-      "ollWALWriterRequest\"0\n\025RollWALWriterResp" +
-      "onse\022\027\n\017region_to_flush\030\001 \003(\014\"#\n\021StopSer" +
-      "verRequest\022\016\n\006reason\030\001 \002(\t\"\024\n\022StopServer" +
-      "Response\"\026\n\024GetServerInfoRequest\"K\n\nServ" +
-      "erInfo\022)\n\013server_name\030\001 \002(\0132\024.hbase.pb.S" +
-      "erverName\022\022\n\nwebui_port\030\002 \001(\r\"B\n\025GetServ" +
-      "erInfoResponse\022)\n\013server_info\030\001 \002(\0132\024.hb" +
-      "ase.pb.ServerInfo\"\034\n\032UpdateConfiguration" +
-      "Request\"\035\n\033UpdateConfigurationResponse\"?",
-      "\n\024GetRegionLoadRequest\022\'\n\ntable_name\030\001 \001" +
-      "(\0132\023.hbase.pb.TableName\"C\n\025GetRegionLoad" +
-      "Response\022*\n\014region_loads\030\001 \003(\0132\024.hbase.p" +
-      "b.RegionLoad\"\200\001\n\030ExecuteProceduresReques" +
-      "t\0220\n\013open_region\030\001 \003(\0132\033.hbase.pb.OpenRe" +
-      "gionRequest\0222\n\014close_region\030\002 \003(\0132\034.hbas" +
-      "e.pb.CloseRegionRequest\"\203\001\n\031ExecuteProce" +
-      "duresResponse\0221\n\013open_region\030\001 \003(\0132\034.hba" +
-      "se.pb.OpenRegionResponse\0223\n\014close_region" +
-      "\030\002 \003(\0132\035.hbase.pb.CloseRegionResponse\"\244\001",
-      "\n\023MergeRegionsRequest\022+\n\010region_a\030\001 \002(\0132" +
-      "\031.hbase.pb.RegionSpecifier\022+\n\010region_b\030\002" +
-      " \002(\0132\031.hbase.pb.RegionSpecifier\022\027\n\010forci" +
-      "ble\030\003 \001(\010:\005false\022\032\n\022master_system_time\030\004" +
-      " \001(\004\"\026\n\024MergeRegionsResponse2\267\014\n\014AdminSe" +
-      "rvice\022P\n\rGetRegionInfo\022\036.hbase.pb.GetReg" +
-      "ionInfoRequest\032\037.hbase.pb.GetRegionInfoR" +
-      "esponse\022M\n\014GetStoreFile\022\035.hbase.pb.GetSt" +
-      "oreFileRequest\032\036.hbase.pb.GetStoreFileRe" +
-      "sponse\022V\n\017GetOnlineRegion\022 .hbase.pb.Get",
-      "OnlineRegionRequest\032!.hbase.pb.GetOnline" +
-      "RegionResponse\022G\n\nOpenRegion\022\033.hbase.pb." +
-      "OpenRegionRequest\032\034.hbase.pb.OpenRegionR" +
-      "esponse\022M\n\014WarmupRegion\022\035.hbase.pb.Warmu" +
-      "pRegionRequest\032\036.hbase.pb.WarmupRegionRe" +
-      "sponse\022J\n\013CloseRegion\022\034.hbase.pb.CloseRe" +
-      "gionRequest\032\035.hbase.pb.CloseRegionRespon" +
-      "se\022J\n\013FlushRegion\022\034.hbase.pb.FlushRegion" +
-      "Request\032\035.hbase.pb.FlushRegionResponse\022J" +
-      "\n\013SplitRegion\022\034.hbase.pb.SplitRegionRequ",
-      "est\032\035.hbase.pb.SplitRegionResponse\022P\n\rCo" +
-      "mpactRegion\022\036.hbase.pb.CompactRegionRequ" +
-      "est\032\037.hbase.pb.CompactRegionResponse\022\\\n\021" +
-      "ReplicateWALEntry\022\".hbase.pb.ReplicateWA" +
-      "LEntryRequest\032#.hbase.pb.ReplicateWALEnt" +
-      "ryResponse\022Q\n\006Replay\022\".hbase.pb.Replicat" +
-      "eWALEntryRequest\032#.hbase.pb.ReplicateWAL" +
-      "EntryResponse\022P\n\rRollWALWriter\022\036.hbase.p" +
-      "b.RollWALWriterRequest\032\037.hbase.pb.RollWA" +
-      "LWriterResponse\022P\n\rGetServerInfo\022\036.hbase",
-      ".pb.GetServerInfoRequest\032\037.hbase.pb.GetS" +
-      "erverInfoResponse\022G\n\nStopServer\022\033.hbase." +
-      "pb.StopServerRequest\032\034.hbase.pb.StopServ" +
-      "erResponse\022_\n\022UpdateFavoredNodes\022#.hbase" +
-      ".pb.UpdateFavoredNodesRequest\032$.hbase.pb" +
-      ".UpdateFavoredNodesResponse\022b\n\023UpdateCon" +
-      "figuration\022$.hbase.pb.UpdateConfiguratio" +
-      "nRequest\032%.hbase.pb.UpdateConfigurationR" +
-      "esponse\022P\n\rGetRegionLoad\022\036.hbase.pb.GetR" +
-      "egionLoadRequest\032\037.hbase.pb.GetRegionLoa",
-      "dResponse\022\\\n\021ExecuteProcedures\022\".hbase.p" +
-      "b.ExecuteProceduresRequest\032#.hbase.pb.Ex" +
-      "ecuteProceduresResponse\022M\n\014MergeRegions\022" +
-      "\035.hbase.pb.MergeRegionsRequest\032\036.hbase.p" +
-      "b.MergeRegionsResponseBH\n1org.apache.had" +
-      "oop.hbase.shaded.protobuf.generatedB\013Adm" +
-      "inProtosH\001\210\001\001\240\001\001"
+      "g\030\003 \001(\010\022\022\n\nsplittable\030\004 \001(\010\022\021\n\tmergeable" +
+      "\030\005 \001(\010\"F\n\017CompactionState\022\010\n\004NONE\020\000\022\t\n\005M",
+      "INOR\020\001\022\t\n\005MAJOR\020\002\022\023\n\017MAJOR_AND_MINOR\020\003\"P" +
+      "\n\023GetStoreFileRequest\022)\n\006region\030\001 \002(\0132\031." +
+      "hbase.pb.RegionSpecifier\022\016\n\006family\030\002 \003(\014" +
+      "\"*\n\024GetStoreFileResponse\022\022\n\nstore_file\030\001" +
+      " \003(\t\"\030\n\026GetOnlineRegionRequest\"D\n\027GetOnl" +
+      "ineRegionResponse\022)\n\013region_info\030\001 \003(\0132\024" +
+      ".hbase.pb.RegionInfo\"\263\002\n\021OpenRegionReque" +
+      "st\022=\n\topen_info\030\001 \003(\0132*.hbase.pb.OpenReg" +
+      "ionRequest.RegionOpenInfo\022\027\n\017serverStart" +
+      "Code\030\002 \001(\004\022\032\n\022master_system_time\030\005 \001(\004\032\251",
+      "\001\n\016RegionOpenInfo\022$\n\006region\030\001 \002(\0132\024.hbas" +
+      "e.pb.RegionInfo\022\037\n\027version_of_offline_no" +
+      "de\030\002 \001(\r\022+\n\rfavored_nodes\030\003 \003(\0132\024.hbase." +
+      "pb.ServerName\022#\n\033openForDistributedLogRe" +
+      "play\030\004 \001(\010\"\246\001\n\022OpenRegionResponse\022F\n\rope" +
+      "ning_state\030\001 \003(\0162/.hbase.pb.OpenRegionRe" +
+      "sponse.RegionOpeningState\"H\n\022RegionOpeni" +
+      "ngState\022\n\n\006OPENED\020\000\022\022\n\016ALREADY_OPENED\020\001\022" +
+      "\022\n\016FAILED_OPENING\020\002\"?\n\023WarmupRegionReque" +
+      "st\022(\n\nregionInfo\030\001 \002(\0132\024.hbase.pb.Region",
+      "Info\"\026\n\024WarmupRegionResponse\"\313\001\n\022CloseRe" +
+      "gionRequest\022)\n\006region\030\001 \002(\0132\031.hbase.pb.R" +
+      "egionSpecifier\022\037\n\027version_of_closing_nod" +
+      "e\030\002 \001(\r\022\036\n\020transition_in_ZK\030\003 \001(\010:\004true\022" +
+      "0\n\022destination_server\030\004 \001(\0132\024.hbase.pb.S" +
+      "erverName\022\027\n\017serverStartCode\030\005 \001(\004\"%\n\023Cl" +
+      "oseRegionResponse\022\016\n\006closed\030\001 \002(\010\"y\n\022Flu" +
+      "shRegionRequest\022)\n\006region\030\001 \002(\0132\031.hbase." +
+      "pb.RegionSpecifier\022\030\n\020if_older_than_ts\030\002" +
+      " \001(\004\022\036\n\026write_flush_wal_marker\030\003 \001(\010\"_\n\023",
+      "FlushRegionResponse\022\027\n\017last_flush_time\030\001" +
+      " \002(\004\022\017\n\007flushed\030\002 \001(\010\022\036\n\026wrote_flush_wal" +
+      "_marker\030\003 \001(\010\"T\n\022SplitRegionRequest\022)\n\006r" +
+      "egion\030\001 \002(\0132\031.hbase.pb.RegionSpecifier\022\023" +
+      "\n\013split_point\030\002 \001(\014\"\025\n\023SplitRegionRespon" +
+      "se\"`\n\024CompactRegionRequest\022)\n\006region\030\001 \002" +
+      "(\0132\031.hbase.pb.RegionSpecifier\022\r\n\005major\030\002" +
+      " \001(\010\022\016\n\006family\030\003 \001(\014\"\027\n\025CompactRegionRes" +
+      "ponse\"\315\001\n\031UpdateFavoredNodesRequest\022I\n\013u" +
+      "pdate_info\030\001 \003(\01324.hbase.pb.UpdateFavore",
+      "dNodesRequest.RegionUpdateInfo\032e\n\020Region" +
+      "UpdateInfo\022$\n\006region\030\001 \002(\0132\024.hbase.pb.Re" +
+      "gionInfo\022+\n\rfavored_nodes\030\002 \003(\0132\024.hbase." +
+      "pb.ServerName\".\n\032UpdateFavoredNodesRespo" +
+      "nse\022\020\n\010response\030\001 \001(\r\"a\n\010WALEntry\022\035\n\003key" +
+      "\030\001 \002(\0132\020.hbase.pb.WALKey\022\027\n\017key_value_by" +
+      "tes\030\002 \003(\014\022\035\n\025associated_cell_count\030\003 \001(\005" +
+      "\"\242\001\n\030ReplicateWALEntryRequest\022!\n\005entry\030\001" +
+      " \003(\0132\022.hbase.pb.WALEntry\022\034\n\024replicationC" +
+      "lusterId\030\002 \001(\t\022\"\n\032sourceBaseNamespaceDir",
+      "Path\030\003 \001(\t\022!\n\031sourceHFileArchiveDirPath\030" +
+      "\004 \001(\t\"\033\n\031ReplicateWALEntryResponse\"\026\n\024Ro" +
+      "llWALWriterRequest\"0\n\025RollWALWriterRespo" +
+      "nse\022\027\n\017region_to_flush\030\001 \003(\014\"#\n\021StopServ" +
+      "erRequest\022\016\n\006reason\030\001 \002(\t\"\024\n\022StopServerR" +
+      "esponse\"\026\n\024GetServerInfoRequest\"K\n\nServe" +
+      "rInfo\022)\n\013server_name\030\001 \002(\0132\024.hbase.pb.Se" +
+      "rverName\022\022\n\nwebui_port\030\002 \001(\r\"B\n\025GetServe" +
+      "rInfoResponse\022)\n\013server_info\030\001 \002(\0132\024.hba" +
+      "se.pb.ServerInfo\"\034\n\032UpdateConfigurationR",
+      "equest\"\035\n\033UpdateConfigurationResponse\"?\n" +
+      "\024GetRegionLoadRequest\022\'\n\ntable_name\030\001 \001(" +
+      "\0132\023.hbase.pb.TableName\"C\n\025GetRegionLoadR" +
+      "esponse\022*\n\014region_loads\030\001 \003(\0132\024.hbase.pb" +
+      ".RegionLoad\"\200\001\n\030ExecuteProceduresRequest" +
+      "\0220\n\013open_region\030\001 \003(\0132\033.hbase.pb.OpenReg" +
+      "ionRequest\0222\n\014close_region\030\002 \003(\0132\034.hbase" +
+      ".pb.CloseRegionRequest\"\203\001\n\031ExecuteProced" +
+      "uresResponse\0221\n\013open_region\030\001 \003(\0132\034.hbas" +
+      "e.pb.OpenRegionResponse\0223\n\014close_region\030",
+      "\002 \003(\0132\035.hbase.pb.CloseRegionResponse\"\244\001\n" +
+      "\023MergeRegionsRequest\022+\n\010region_a\030\001 \002(\0132\031" +
+      ".hbase.pb.RegionSpecifier\022+\n\010region_b\030\002 " +
+      "\002(\0132\031.hbase.pb.RegionSpecifier\022\027\n\010forcib" +
+      "le\030\003 \001(\010:\005false\022\032\n\022master_system_time\030\004 " +
+      "\001(\004\"\026\n\024MergeRegionsResponse2\267\014\n\014AdminSer" +
+      "vice\022P\n\rGetRegionInfo\022\036.hbase.pb.GetRegi" +
+      "onInfoRequest\032\037.hbase.pb.GetRegionInfoRe" +
+      "sponse\022M\n\014GetStoreFile\022\035.hbase.pb.GetSto" +
+      "reFileRequest\032\036.hbase.pb.GetStoreFileRes",
+      "ponse\022V\n\017GetOnlineRegion\022 .hbase.pb.GetO" +
+      "nlineRegionRequest\032!.hbase.pb.GetOnlineR" +
+      "egionResponse\022G\n\nOpenRegion\022\033.hbase.pb.O" +
+      "penRegionRequest\032\034.hbase.pb.OpenRegionRe" +
+      "sponse\022M\n\014WarmupRegion\022\035.hbase.pb.Warmup" +
+      "RegionRequest\032\036.hbase.pb.WarmupRegionRes" +
+      "ponse\022J\n\013CloseRegion\022\034.hbase.pb.CloseReg" +
+      "ionRequest\032\035.hbase.pb.CloseRegionRespons" +
+      "e\022J\n\013FlushRegion\022\034.hbase.pb.FlushRegionR" +
+      "equest\032\035.hbase.pb.FlushRegionResponse\022J\n",
+      "\013SplitRegion\022\034.hbase.pb.SplitRegionReque" +
+      "st\032\035.hbase.pb.SplitRegionResponse\022P\n\rCom" +
+      "pactRegion\022\036.hbase.pb.CompactRegionReque" +
+      "st\032\037.hbase.pb.CompactRegionResponse\022\\\n\021R" +
+      "eplicateWALEntry\022\".hbase.pb.ReplicateWAL" +
+      "EntryRequest\032#.hbase.pb.ReplicateWALEntr" +
+      "yResponse\022Q\n\006Replay\022\".hbase.pb.Replicate" +
+      "WALEntryRequest\032#.hbase.pb.ReplicateWALE" +
+      "ntryResponse\022P\n\rRollWALWriter\022\036.hbase.pb" +
+      ".RollWALWriterRequest\032\037.hbase.pb.RollWAL",
+      "WriterResponse\022P\n\rGetServerInfo\022\036.hbase." +
+      "pb.GetServerInfoRequest\032\037.hbase.pb.GetSe" +
+      "rverInfoResponse\022G\n\nStopServer\022\033.hbase.p" +
+      "b.StopServerRequest\032\034.hbase.pb.StopServe" +
+      "rResponse\022_\n\022UpdateFavoredNodes\022#.hbase." +
+      "pb.UpdateFavoredNodesRequest\032$.hbase.pb." +
+      "UpdateFavoredNodesResponse\022b\n\023UpdateConf" +
+      "iguration\022$.hbase.pb.UpdateConfiguration" +
+      "Request\032%.hbase.pb.UpdateConfigurationRe" +
+      "sponse\022P\n\rGetRegionLoad\022\036.hbase.pb.GetRe",
+      "gionLoadRequest\032\037.hbase.pb.GetRegionLoad" +
+      "Response\022\\\n\021ExecuteProcedures\022\".hbase.pb" +
+      ".ExecuteProceduresRequest\032#.hbase.pb.Exe" +
+      "cuteProceduresResponse\022M\n\014MergeRegions\022\035" +
+      ".hbase.pb.MergeRegionsRequest\032\036.hbase.pb" +
+      ".MergeRegionsResponseBH\n1org.apache.hado" +
+      "op.hbase.shaded.protobuf.generatedB\013Admi" +
+      "nProtosH\001\210\001\001\240\001\001"
     };
     org.apache.hadoop.hbase.shaded.com.google.protobuf.Descriptors.FileDescriptor.InternalDescriptorAssigner assigner =
         new org.apache.hadoop.hbase.shaded.com.google.protobuf.Descriptors.FileDescriptor.    InternalDescriptorAssigner() {
@@ -29036,7 +29277,7 @@ public final class AdminProtos {
     internal_static_hbase_pb_GetRegionInfoResponse_fieldAccessorTable = new
       org.apache.hadoop.hbase.shaded.com.google.protobuf.GeneratedMessageV3.FieldAccessorTable(
         internal_static_hbase_pb_GetRegionInfoResponse_descriptor,
-        new java.lang.String[] { "RegionInfo", "CompactionState", "IsRecovering", });
+        new java.lang.String[] { "RegionInfo", "CompactionState", "IsRecovering", "Splittable", "Mergeable", });
     internal_static_hbase_pb_GetStoreFileRequest_descriptor =
       getDescriptor().getMessageTypes().get(2);
     internal_static_hbase_pb_GetStoreFileRequest_fieldAccessorTable = new

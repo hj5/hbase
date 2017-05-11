@@ -370,3 +370,25 @@ message MoveRegionStateData {
   required ServerName source_server = 2;
   required ServerName destination_server = 3;
 }
+
+enum GCRegionState {
+  GC_REGION_PREPARE = 1;
+  GC_REGION_ARCHIVE = 2;
+  GC_REGION_PURGE_METADATA = 3;
+}
+
+message GCRegionStateData {
+  required RegionInfo region_info = 1;
+}
+
+enum GCMergedRegionsState {
+  GC_MERGED_REGIONS_PREPARE = 1;
+  GC_MERGED_REGIONS_PURGE = 2;
+  GC_REGION_EDIT_METADATA = 3;
+}
+
+message GCMergedRegionsStateData {
+  required RegionInfo parent_a = 1;
+  required RegionInfo parent_b = 2;
+  required RegionInfo merged_child = 3;
+}

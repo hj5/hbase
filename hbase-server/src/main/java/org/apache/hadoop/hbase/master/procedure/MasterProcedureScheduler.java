@@ -572,11 +572,13 @@ public class MasterProcedureScheduler extends AbstractProcedureScheduler {
         return false;
       // region operations are using the shared-lock on the table
       // and then they will grab an xlock on the region.
-      case SPLIT:
-      case MERGE:
-      case ASSIGN:
-      case UNASSIGN:
+      case REGION_SPLIT:
+      case REGION_MERGE:
+      case REGION_ASSIGN:
+      case REGION_UNASSIGN:
       case REGION_EDIT:
+      case REGION_GC:
+      case MERGED_REGIONS_GC:
         return false;
       default:
         break;

@@ -413,14 +413,8 @@ implements ServerProcedureInterface {
       final HRegionInfo hri = it.next();
       RegionTransitionProcedure rtp = am.getRegionStates().getRegionTransitionProcedure(hri);
       if (rtp == null) continue;
-      ServerName rtpServerName = rtp.getServer();
-      if (rtpServerName == null) {
-        LOG.warn("RIT with ServerName null! " + rtp);
-        continue;
-      }
-      if (!rtpServerName.equals(this.serverName)) continue;
       LOG.info("pid=" + getProcId() + " found RIT " + rtp + "; " +
-          rtp.getRegionState(env).toShortString());
+      rtp.getRegionState(env).toShortString());
       // Notify RIT on server crash.
       if (sce == null) {
         sce = new ServerCrashException(getProcId());

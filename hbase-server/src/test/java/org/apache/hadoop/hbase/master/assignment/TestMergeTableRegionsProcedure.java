@@ -26,11 +26,13 @@ import java.util.List;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.CategoryBasedTimeout;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HTableDescriptor;
+import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureConstants;
@@ -41,18 +43,23 @@ import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.Pair;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.Ignore;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+import org.junit.rules.TestName;
+import org.junit.rules.TestRule;
 
 @Category({MasterTests.class, MediumTests.class})
-@Ignore // Fix for AMv2.
 public class TestMergeTableRegionsProcedure {
   private static final Log LOG = LogFactory.getLog(TestMergeTableRegionsProcedure.class);
+  @Rule public final TestRule timeout = CategoryBasedTimeout.builder().
+      withTimeout(this.getClass()).withLookingForStuckThread(true).build();
+  @Rule public final TestName name = new TestName();
 
   protected static final HBaseTestingUtility UTIL = new HBaseTestingUtility();
   private static long nonceGroup = HConstants.NO_NONCE;
@@ -68,7 +75,6 @@ public class TestMergeTableRegionsProcedure {
     conf.setInt("hbase.assignment.maximum.attempts", 3);
     conf.setInt("hbase.master.maximum.ping.server.attempts", 3);
     conf.setInt("hbase.master.ping.server.retry.sleep.interval", 1);
-
     conf.setInt(MasterProcedureConstants.MASTER_PROCEDURE_THREADS, 1);
   }
 
@@ -119,9 +125,9 @@ public class TestMergeTableRegionsProcedure {
   /**
    * This tests two region merges
    */
-  @Test(timeout=60000)
+  @Test
   public void testMergeTwoRegions() throws Exception {
-    final TableName tableName = TableName.valueOf("testMergeTwoRegions");
+    final TableName tableName = TableName.valueOf(this.name.getMethodName());
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
 
     List<HRegionInfo> tableRegions = createTable(tableName);
@@ -129,19 +135,33 @@ public class TestMergeTableRegionsProcedure {
     HRegionInfo[] regionsToMerge = new HRegionInfo[2];
     regionsToMerge[0] = tableRegions.get(0);
     regionsToMerge[1] = tableRegions.get(1);
-
-    long procId = procExec.submitProcedure(new MergeTableRegionsProcedure(
-      procExec.getEnvironment(), regionsToMerge, true));
+    MergeTableRegionsProcedure proc =
+        new MergeTableRegionsProcedure(procExec.getEnvironment(), regionsToMerge, true);
+    long procId = procExec.submitProcedure(proc);
     ProcedureTestingUtility.waitProcedure(procExec, procId);
     ProcedureTestingUtility.assertProcNotFailed(procExec, procId);
-
     assertRegionCount(tableName, initialRegionCount - 1);
+    Pair<HRegionInfo, HRegionInfo> pair =
+      MetaTableAccessor.getRegionsFromMergeQualifier(UTIL.getConnection(),
+        proc.getMergedRegion().getRegionName());
+    assertTrue(pair.getFirst() != null && pair.getSecond() != null);
+
+    // Can I purge the merged regions from hbase:meta? Check that all went
+    // well by looking at the merged row up in hbase:meta. It should have no
+    // more mention of the merged regions; they are purged as last step in
+    // the merged regions cleanup.
+    UTIL.getHBaseCluster().getMaster().setCatalogJanitorEnabled(true);
+    UTIL.getHBaseCluster().getMaster().getCatalogJanitor().triggerNow();
+    while (pair != null && pair.getFirst() != null && pair.getSecond() != null) {
+      pair = MetaTableAccessor.getRegionsFromMergeQualifier(UTIL.getConnection(),
+          proc.getMergedRegion().getRegionName());
+    }
   }
 
   /**
    * This tests two concurrent region merges
    */
-  @Test(timeout=60000)
+  @Test
   public void testMergeRegionsConcurrently() throws Exception {
     final TableName tableName = TableName.valueOf("testMergeRegionsConcurrently");
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
@@ -166,7 +186,7 @@ public class TestMergeTableRegionsProcedure {
     assertRegionCount(tableName, initialRegionCount - 2);
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testRecoveryAndDoubleExecution() throws Exception {
     final TableName tableName = TableName.valueOf("testRecoveryAndDoubleExecution");
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
@@ -190,7 +210,7 @@ public class TestMergeTableRegionsProcedure {
     assertRegionCount(tableName, initialRegionCount - 1);
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testRollbackAndDoubleExecution() throws Exception {
     final TableName tableName = TableName.valueOf("testRollbackAndDoubleExecution");
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();

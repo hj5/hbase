@@ -42,25 +42,26 @@ import org.apache.hadoop.hbase.DoNotRetryIOException;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionInfo;
-import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.MasterSwitchType;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.RegionReplicaUtil;
+import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.io.hfile.CacheConfig;
 import org.apache.hadoop.hbase.master.MasterCoprocessorHost;
 import org.apache.hadoop.hbase.master.MasterFileSystem;
 import org.apache.hadoop.hbase.master.RegionState.State;
 import org.apache.hadoop.hbase.master.assignment.RegionStates.RegionStateNode;
-import org.apache.hadoop.hbase.master.procedure.AbstractStateMachineTableProcedure;
+import org.apache.hadoop.hbase.master.procedure.AbstractStateMachineRegionProcedure;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureUtil;
 import org.apache.hadoop.hbase.regionserver.HRegionFileSystem;
 import org.apache.hadoop.hbase.regionserver.HStore;
 import org.apache.hadoop.hbase.regionserver.StoreFile;
 import org.apache.hadoop.hbase.regionserver.StoreFileInfo;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.GetRegionInfoResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos.SplitTableRegionState;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -73,17 +74,14 @@ import com.google.common.annotations.VisibleForTesting;
 
 /**
  * The procedure to split a region in a table.
+ * Takes lock on the parent region.
+ * It holds the lock for the life of the procedure.
  */
 @InterfaceAudience.Private
 public class SplitTableRegionProcedure
-    extends AbstractStateMachineTableProcedure<SplitTableRegionState> {
+    extends AbstractStateMachineRegionProcedure<SplitTableRegionState> {
   private static final Log LOG = LogFactory.getLog(SplitTableRegionProcedure.class);
-
   private Boolean traceEnabled = null;
-
-  private volatile boolean lock = false;
-
-  private HRegionInfo parentHRI;
   private HRegionInfo daughter_1_HRI;
   private HRegionInfo daughter_2_HRI;
 
@@ -93,20 +91,14 @@ public class SplitTableRegionProcedure
 
   public SplitTableRegionProcedure(final MasterProcedureEnv env,
       final HRegionInfo regionToSplit, final byte[] splitRow) throws IOException {
-    super(env);
+    super(env, regionToSplit);
 
     checkSplitRow(regionToSplit, splitRow);
-
-    this.parentHRI = regionToSplit;
 
     final TableName table = regionToSplit.getTable();
     final long rid = getDaughterRegionIdTimestamp(regionToSplit);
     this.daughter_1_HRI = new HRegionInfo(table, regionToSplit.getStartKey(), splitRow, false, rid);
     this.daughter_2_HRI = new HRegionInfo(table, splitRow, regionToSplit.getEndKey(), false, rid);
-  }
-
-  protected void setFailure(Throwable cause) {
-    super.setFailure(getClass().getSimpleName(), cause);
   }
 
   private static void checkSplitRow(final HRegionInfo regionToSplit, final byte[] splitRow)
@@ -196,7 +188,7 @@ public class SplitTableRegionProcedure
         throw new UnsupportedOperationException(this + " unhandled state=" + state);
       }
     } catch (IOException e) {
-      String msg = "Error trying to split region " + parentHRI.getEncodedName() + " in the table "
+      String msg = "Error trying to split region " + getParentRegion().getEncodedName() + " in the table "
           + getTableName() + " (in state=" + state + ")";
       if (!isRollbackSupported(state)) {
         // We reach a state that cannot be rolled back. We just need to keep retry.
@@ -245,7 +237,7 @@ public class SplitTableRegionProcedure
       // this should be just a "temporary error" (e.g. network down)
       LOG.warn("pid=" + getProcId() + " failed rollback attempt step " + state +
           " for splitting the region "
-        + parentHRI.getEncodedName() + " in table " + getTableName(), e);
+        + getParentRegion().getEncodedName() + " in table " + getTableName(), e);
       throw e;
     }
   }
@@ -290,7 +282,7 @@ public class SplitTableRegionProcedure
     final MasterProcedureProtos.SplitTableRegionStateData.Builder splitTableRegionMsg =
         MasterProcedureProtos.SplitTableRegionStateData.newBuilder()
         .setUserInfo(MasterProcedureUtil.toProtoUserInfo(getUser()))
-        .setParentRegionInfo(HRegionInfo.convert(parentHRI))
+        .setParentRegionInfo(HRegionInfo.convert(getRegion()))
         .addChildRegionInfo(HRegionInfo.convert(daughter_1_HRI))
         .addChildRegionInfo(HRegionInfo.convert(daughter_2_HRI));
     splitTableRegionMsg.build().writeDelimitedTo(stream);
@@ -303,7 +295,7 @@ public class SplitTableRegionProcedure
     final MasterProcedureProtos.SplitTableRegionStateData splitTableRegionsMsg =
         MasterProcedureProtos.SplitTableRegionStateData.parseDelimitedFrom(stream);
     setUser(MasterProcedureUtil.toUserInfo(splitTableRegionsMsg.getUserInfo()));
-    parentHRI = HRegionInfo.convert(splitTableRegionsMsg.getParentRegionInfo());
+    setRegion(HRegionInfo.convert(splitTableRegionsMsg.getParentRegionInfo()));
     assert(splitTableRegionsMsg.getChildRegionInfoCount() == 2);
     daughter_1_HRI = HRegionInfo.convert(splitTableRegionsMsg.getChildRegionInfo(0));
     daughter_2_HRI = HRegionInfo.convert(splitTableRegionsMsg.getChildRegionInfo(1));
@@ -315,45 +307,20 @@ public class SplitTableRegionProcedure
     sb.append(" table=");
     sb.append(getTableName());
     sb.append(", parent=");
-    sb.append(parentHRI.getShortNameToLog());
+    sb.append(getParentRegion().getShortNameToLog());
     sb.append(", daughterA=");
     sb.append(daughter_1_HRI.getShortNameToLog());
     sb.append(", daughterB=");
     sb.append(daughter_2_HRI.getShortNameToLog());
   }
 
-  @Override
-  protected LockState acquireLock(final MasterProcedureEnv env) {
-    if (env.waitInitialized(this)) return LockState.LOCK_EVENT_WAIT;
-
-    if (env.getProcedureScheduler().waitRegions(this, getTableName(), parentHRI)) {
-      try {
-        LOG.debug("pid=" + getProcId() + " failed acquire, returning " + LockState.LOCK_EVENT_WAIT +
-            " lock dump " + env.getProcedureScheduler().dumpLocks());
-      } catch (IOException e) {
-        // TODO Auto-generated catch block
-        e.printStackTrace();
-      }
-      return LockState.LOCK_EVENT_WAIT;
-    }
-    this.lock = true;
-    return LockState.LOCK_ACQUIRED;
-  }
-
-  @Override
-  protected void releaseLock(final MasterProcedureEnv env) {
-    this.lock = false;
-    env.getProcedureScheduler().wakeRegions(this, getTableName(), parentHRI);
-  }
-
-  @Override
-  public TableName getTableName() {
-    return parentHRI.getTable();
+  private HRegionInfo getParentRegion() {
+    return getRegion();
   }
 
   @Override
   public TableOperationType getTableOperationType() {
-    return TableOperationType.SPLIT;
+    return TableOperationType.REGION_SPLIT;
   }
 
   private byte[] getSplitRow() {
@@ -369,12 +336,14 @@ public class SplitTableRegionProcedure
   @VisibleForTesting
   public boolean prepareSplitRegion(final MasterProcedureEnv env) throws IOException {
     // Check whether the region is splittable
-    RegionStateNode node = env.getAssignmentManager().getRegionStates().getRegionNode(parentHRI);
+    RegionStateNode node = env.getAssignmentManager().getRegionStates().getRegionNode(getParentRegion());
+    HRegionInfo parentHRI = null;
     if (node != null) {
       parentHRI = node.getRegionInfo();
 
       // expected parent to be online or closed
       if (!node.isInState(EXPECTED_SPLIT_STATES)) {
+        // We may have SPLIT already?
         setFailure(new IOException("Split " + parentHRI.getRegionNameAsString() +
             " FAILED because state=" + node.getState() + "; expected " +
             Arrays.toString(EXPECTED_SPLIT_STATES)));
@@ -387,13 +356,32 @@ public class SplitTableRegionProcedure
             "offline/split already."));
         return false;
       }
+
+      // Ask the remote regionserver if this region is splittable. If we get an IOE, report it
+      // along w/ the failure so can see why we are not splittable at this time.
+      IOException splittableCheckIOE = null;
+      boolean splittable = false;
+      try {
+        GetRegionInfoResponse response =
+            Util.getRegionInfoResponse(env, node.getRegionLocation(), node.getRegionInfo());
+        splittable = response.hasSplittable() && response.getSplittable();
+      } catch (IOException e) {
+        splittableCheckIOE = e;
+      }
+      if (!splittable) {
+        IOException e = new IOException(parentHRI.getShortNameToLog() + " NOT splittable");
+        if (splittableCheckIOE != null) e.initCause(splittableCheckIOE);
+        setFailure(e);
+        return false;
+      }
     }
 
-    // since we have the lock and the master is coordinating the operation
+    // Since we have the lock and the master is coordinating the operation
     // we are always able to split the region
     if (!env.getMasterServices().isSplitOrMergeEnabled(MasterSwitchType.SPLIT)) {
       LOG.warn("pid=" + getProcId() + " split switch is off! skip split of " + parentHRI);
-      setFailure(new IOException("Split region " + parentHRI.getRegionNameAsString() +
+      setFailure(new IOException("Split region " +
+          (parentHRI == null? "null": parentHRI.getRegionNameAsString()) +
           " failed due to split switch off"));
       return false;
     }
@@ -438,7 +426,7 @@ public class SplitTableRegionProcedure
 
     final AssignProcedure[] procs = new AssignProcedure[regionReplication];
     for (int i = 0; i < regionReplication; ++i) {
-      final HRegionInfo hri = RegionReplicaUtil.getRegionInfoForReplica(parentHRI, i);
+      final HRegionInfo hri = RegionReplicaUtil.getRegionInfoForReplica(getParentRegion(), i);
       procs[i] = env.getAssignmentManager().createAssignProcedure(hri, serverName);
     }
     env.getMasterServices().getMasterProcedureExecutor().submitProcedures(procs);
@@ -452,10 +440,10 @@ public class SplitTableRegionProcedure
   @VisibleForTesting
   public void createDaughterRegions(final MasterProcedureEnv env) throws IOException {
     final MasterFileSystem mfs = env.getMasterServices().getMasterFileSystem();
-    final Path tabledir = FSUtils.getTableDir(mfs.getRootDir(), parentHRI.getTable());
+    final Path tabledir = FSUtils.getTableDir(mfs.getRootDir(), getTableName());
     final FileSystem fs = mfs.getFileSystem();
     HRegionFileSystem regionFs = HRegionFileSystem.openRegionFromFileSystem(
-      env.getMasterConfiguration(), fs, tabledir, parentHRI, false);
+      env.getMasterConfiguration(), fs, tabledir, getParentRegion(), false);
     regionFs.createSplitsDir();
 
     Pair<Integer, Integer> expectedReferences = splitStoreFiles(env, regionFs);
@@ -509,7 +497,7 @@ public class SplitTableRegionProcedure
         conf.getInt(HStore.BLOCKING_STOREFILES_KEY, HStore.DEFAULT_BLOCKING_STOREFILE_COUNT)),
       nbFiles);
     LOG.info("pid=" + getProcId() + " preparing to split " + nbFiles + " storefiles for region " +
-      parentHRI + " using " + maxThreads + " threads");
+      getParentRegion().getShortNameToLog() + " using " + maxThreads + " threads");
     final ExecutorService threadPool = Executors.newFixedThreadPool(
       maxThreads, Threads.getNamedThreadFactory("StoreFileSplitter-%1$d"));
     final List<Future<Pair<Path,Path>>> futures = new ArrayList<Future<Pair<Path,Path>>>(nbFiles);
@@ -567,9 +555,8 @@ public class SplitTableRegionProcedure
     }
 
     if (LOG.isDebugEnabled()) {
-      LOG.debug("pid=" + getProcId() + " split storefiles for region " + parentHRI + " Daughter A: " +
-          daughterA
-          + " storefiles, Daughter B: " + daughterB + " storefiles.");
+      LOG.debug("pid=" + getProcId() + " split storefiles for region " + getParentRegion().getShortNameToLog() +
+          " Daughter A: " + daughterA + " storefiles, Daughter B: " + daughterB + " storefiles.");
     }
     return new Pair<Integer, Integer>(daughterA, daughterB);
   }
@@ -586,7 +573,7 @@ public class SplitTableRegionProcedure
       final byte[] family, final StoreFile sf) throws IOException {
     if (LOG.isDebugEnabled()) {
       LOG.debug("pid=" + getProcId() + " splitting started for store file: " +
-          sf.getPath() + " for region: " + parentHRI);
+          sf.getPath() + " for region: " + getParentRegion());
     }
 
     final byte[] splitRow = getSplitRow();
@@ -597,7 +584,7 @@ public class SplitTableRegionProcedure
         regionFs.splitStoreFile(this.daughter_2_HRI, familyName, sf, splitRow, true, null);
     if (LOG.isDebugEnabled()) {
       LOG.debug("pid=" + getProcId() + " splitting complete for store file: " +
-          sf.getPath() + " for region: " + parentHRI);
+          sf.getPath() + " for region: " + getParentRegion().getShortNameToLog());
     }
     return new Pair<Path,Path>(path_first, path_second);
   }
@@ -640,7 +627,7 @@ public class SplitTableRegionProcedure
     if (cpHost != null) {
       if (cpHost.preSplitBeforePONRAction(getSplitRow(), metaEntries, getUser())) {
         throw new IOException("Coprocessor bypassing region " +
-            parentHRI.getRegionNameAsString() + " split.");
+            getParentRegion().getRegionNameAsString() + " split.");
       }
       try {
         for (Mutation p : metaEntries) {
@@ -661,7 +648,7 @@ public class SplitTableRegionProcedure
    * @throws IOException
    */
   private void updateMetaForDaughterRegions(final MasterProcedureEnv env) throws IOException {
-    env.getAssignmentManager().markRegionAsSplit(parentHRI, getParentRegionServerName(env),
+    env.getAssignmentManager().markRegionAsSplit(getParentRegion(), getParentRegionServerName(env),
       daughter_1_HRI, daughter_2_HRI);
   }
 
@@ -690,14 +677,14 @@ public class SplitTableRegionProcedure
 
   private ServerName getParentRegionServerName(final MasterProcedureEnv env) {
     return env.getMasterServices().getAssignmentManager()
-      .getRegionStates().getRegionServerOfRegion(parentHRI);
+      .getRegionStates().getRegionServerOfRegion(getParentRegion());
   }
 
   private UnassignProcedure[] createUnassignProcedures(final MasterProcedureEnv env,
       final int regionReplication) {
     final UnassignProcedure[] procs = new UnassignProcedure[regionReplication];
     for (int i = 0; i < procs.length; ++i) {
-      final HRegionInfo hri = RegionReplicaUtil.getRegionInfoForReplica(parentHRI, i);
+      final HRegionInfo hri = RegionReplicaUtil.getRegionInfoForReplica(getParentRegion(), i);
       procs[i] = env.getAssignmentManager().createUnassignProcedure(hri, null, true);
     }
     return procs;
@@ -734,15 +721,5 @@ public class SplitTableRegionProcedure
       traceEnabled = LOG.isTraceEnabled();
     }
     return traceEnabled;
-  }
-
-  @Override
-  protected boolean holdLock(final MasterProcedureEnv env) {
-    return true;
-  }
-
-  @Override
-  protected boolean hasLock(final MasterProcedureEnv env) {
-    return lock;
   }
 }

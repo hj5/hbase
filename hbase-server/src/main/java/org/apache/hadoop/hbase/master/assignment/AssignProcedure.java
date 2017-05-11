@@ -71,6 +71,15 @@ public class AssignProcedure extends RegionTransitionProcedure {
 
   private boolean forceNewPlan = false;
 
+  /**
+   * Gets set as desired target on move, merge, etc., when we want to go to a particular server.
+   * We may not be able to respect this request but will try. When it is NOT set, then we ask
+   * the balancer to assign. This value is used below in startTransition to set regionLocation if
+   * non-null. Setting regionLocation in regionServerNode is how we override balancer setting
+   * destination.
+   */
+  protected volatile ServerName targetServer;
+
   public AssignProcedure() {
     // Required by the Procedure framework to create the procedure on replay
     super();
@@ -83,22 +92,18 @@ public class AssignProcedure extends RegionTransitionProcedure {
   public AssignProcedure(final HRegionInfo regionInfo, final boolean forceNewPlan) {
     super(regionInfo);
     this.forceNewPlan = forceNewPlan;
-    this.server = null;
+    this.targetServer = null;
   }
 
   public AssignProcedure(final HRegionInfo regionInfo, final ServerName destinationServer) {
     super(regionInfo);
     this.forceNewPlan = false;
-    this.server = destinationServer;
-  }
-
-  public ServerName getServer() {
-    return this.server;
+    this.targetServer = destinationServer;
   }
 
   @Override
   public TableOperationType getTableOperationType() {
-    return TableOperationType.ASSIGN;
+    return TableOperationType.REGION_ASSIGN;
   }
 
   @Override
@@ -119,8 +124,8 @@ public class AssignProcedure extends RegionTransitionProcedure {
     if (forceNewPlan) {
       state.setForceNewPlan(true);
     }
-    if (server != null) {
-      state.setTargetServer(ProtobufUtil.toServerName(server));
+    if (this.targetServer != null) {
+      state.setTargetServer(ProtobufUtil.toServerName(this.targetServer));
     }
     state.build().writeDelimitedTo(stream);
   }
@@ -132,7 +137,7 @@ public class AssignProcedure extends RegionTransitionProcedure {
     setRegionInfo(HRegionInfo.convert(state.getRegionInfo()));
     forceNewPlan = state.getForceNewPlan();
     if (state.hasTargetServer()) {
-      server = ProtobufUtil.toServerName(state.getTargetServer());
+      this.targetServer = ProtobufUtil.toServerName(state.getTargetServer());
     }
   }
 
@@ -146,8 +151,7 @@ public class AssignProcedure extends RegionTransitionProcedure {
     }
     // If the region is SPLIT, we can't assign it.
     if (regionNode.isInState(State.SPLIT)) {
-      LOG.info("SPLIT, cannot be assigned; " +
-          this + "; " + regionNode.toShortString());
+      LOG.info("SPLIT, cannot be assigned; " + this + "; " + regionNode.toShortString());
       return false;
     }
 
@@ -163,16 +167,22 @@ public class AssignProcedure extends RegionTransitionProcedure {
       return false;
     }
 
-    // send assign (add into assign-pool). region is now in OFFLINE state
+    // Send assign (add into assign-pool). Region is now in OFFLINE state. Setting offline state
+    // scrubs what was the old region location. Setting a new regionLocation here is how we retain
+    // old assignment or specify target server if a move or merge. See
+    // AssignmentManager#processAssignQueue. Otherwise, balancer gives us location.
     ServerName lastRegionLocation = regionNode.offline();
     boolean retain = false;
     if (!forceNewPlan) {
-      if (this.server != null) {
-        regionNode.setRegionLocation(server);
+      if (this.targetServer != null) {
+        retain = targetServer.equals(lastRegionLocation);
+        regionNode.setRegionLocation(targetServer);
       } else {
-        // Try to 'retain' old assignment.
-        retain = true;
-        if (lastRegionLocation != null) regionNode.setRegionLocation(lastRegionLocation);
+        if (lastRegionLocation != null) {
+          // Try and keep the location we had before we offlined.
+          retain = true;
+          regionNode.setRegionLocation(lastRegionLocation);
+        }
       }
     }
     LOG.info("Start " + this + "; " + regionNode.toShortString() +
@@ -193,13 +203,6 @@ public class AssignProcedure extends RegionTransitionProcedure {
     if (regionNode.getRegionLocation() == null) {
       setTransitionState(RegionTransitionState.REGION_TRANSITION_QUEUE);
       return true;
-    } else if (this.server == null) {
-      // Update our server reference target to align with regionNode regionLocation
-      if (LOG.isTraceEnabled()) {
-        LOG.trace("Setting tgt=" + regionNode.getRegionLocation() +
-          " from regionStateNode.getRegionLocation " + this + "; " + regionNode.toShortString());
-      }
-      this.server = regionNode.getRegionLocation();
     }
 
     if (!isServerOnline(env, regionNode)) {
@@ -288,7 +291,7 @@ public class AssignProcedure extends RegionTransitionProcedure {
       aborted.set(true);
     }
     this.forceNewPlan = true;
-    this.server = null;
+    this.targetServer = null;
     regionNode.offline();
     // We were moved to OPENING state before dispatch. Undo. It is safe to call
     // this method because it checks for OPENING first.
@@ -317,5 +320,11 @@ public class AssignProcedure extends RegionTransitionProcedure {
   protected void remoteCallFailed(final MasterProcedureEnv env, final RegionStateNode regionNode,
       final IOException exception) {
     handleFailure(env, regionNode);
+  }
+
+  @Override
+  public void toStringClassDetails(StringBuilder sb) {
+    super.toStringClassDetails(sb);
+    if (this.targetServer != null) sb.append(", target=").append(this.targetServer);
   }
 }

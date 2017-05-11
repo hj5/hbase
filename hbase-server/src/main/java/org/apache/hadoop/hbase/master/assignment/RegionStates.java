@@ -103,6 +103,11 @@ public class RegionStates {
     private volatile RegionTransitionProcedure procedure = null;
     private volatile ServerName regionLocation = null;
     private volatile ServerName lastHost = null;
+    /**
+     * A Region-in-Transition (RIT) moves through states.
+     * See {@link State} for complete list. A Region that
+     * is opened moves from OFFLINE => OPENING => OPENED.
+     */
     private volatile State state = State.OFFLINE;
 
     /**
@@ -183,8 +188,8 @@ public class RegionStates {
     
     public ServerName setRegionLocation(final ServerName serverName) {
       ServerName lastRegionLocation = this.regionLocation;
-      if (serverName == null) {
-        LOG.debug("REMOVE tracking when we are set to null " + this, new Throwable("DEBUG"));
+      if (LOG.isTraceEnabled() && serverName == null) {
+        LOG.trace("Tracking when we are set to null " + this, new Throwable("TRACE"));
       }
       this.regionLocation = serverName;
       this.lastUpdate = EnvironmentEdgeManager.currentTime();
@@ -274,7 +279,8 @@ public class RegionStates {
     }
  
     public String toShortString() {
-      return String.format("regionState=%s, regionLocation=%s", getState(), getRegionLocation());
+      // rit= is the current Region-In-Transition State -- see State enum.
+      return String.format("rit=%s, location=%s", getState(), getRegionLocation());
     }
 
     public String toDescriptiveString() {

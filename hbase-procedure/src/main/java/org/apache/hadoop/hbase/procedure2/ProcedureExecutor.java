@@ -1104,6 +1104,7 @@ public class ProcedureExecutor<TEnvironment> {
               scheduler.yield(proc);
               break;
             case LOCK_EVENT_WAIT:
+              LOG.info("DEBUG LOCK_EVENT_WAIT rollback..." + proc);
               procStack.unsetRollback();
               break;
             default:
@@ -1121,6 +1122,7 @@ public class ProcedureExecutor<TEnvironment> {
                 scheduler.yield(proc);
                 break;
               case LOCK_EVENT_WAIT:
+                LOG.info("DEBUG LOCK_EVENT_WAIT can't rollback child running?..." + proc);
                 break;
               default:
                 throw new UnsupportedOperationException();
@@ -1372,7 +1374,9 @@ public class ProcedureExecutor<TEnvironment> {
           subprocs = null;
         }
       } catch (ProcedureSuspendedException e) {
-        LOG.info("Suspend " + procedure);
+        if (LOG.isTraceEnabled()) {
+          LOG.trace("Suspend " + procedure);
+        }
         suspended = true;
       } catch (ProcedureYieldException e) {
         if (LOG.isTraceEnabled()) {
@@ -1397,11 +1401,13 @@ public class ProcedureExecutor<TEnvironment> {
       if (!procedure.isFailed()) {
         if (subprocs != null) {
           if (subprocs.length == 1 && subprocs[0] == procedure) {
-            // Procedure returned itself.
-            // Quick-shortcut for a state machine like procedure
+            // Procedure returned itself. Quick-shortcut for a state machine-like procedure;
+            // i.e. we go around this loop again rather than go back out on the scheduler queue.
             subprocs = null;
             reExecute = true;
-            LOG.info("Short-circuit to rexecute for pid=" + procedure.getProcId());
+            if (LOG.isTraceEnabled()) {
+              LOG.trace("Short-circuit to next step on pid=" + procedure.getProcId());
+            }
           } else {
             // Yield the current procedure, and make the subprocedure runnable
             // subprocs may come back 'null'.
@@ -1529,7 +1535,7 @@ public class ProcedureExecutor<TEnvironment> {
       store.update(parent);
       scheduler.addFront(parent);
       if (LOG.isDebugEnabled()) {
-        LOG.debug("Finished ALL subprocedures of " + parent + "; resume.");
+        LOG.debug("Finished subprocedure(s) of " + parent + "; resume parent processing.");
       }
       return;
     }
@@ -1619,6 +1625,7 @@ public class ProcedureExecutor<TEnvironment> {
   // ==========================================================================
   private final class WorkerThread extends StoppableThread {
     private final AtomicLong executionStartTime = new AtomicLong(Long.MAX_VALUE);
+    private Procedure activeProcedure;
 
     public WorkerThread(final ThreadGroup group) {
       super(group, "ProcExecWrkr-" + workerId.incrementAndGet());
@@ -1635,27 +1642,28 @@ public class ProcedureExecutor<TEnvironment> {
       long lastUpdate = EnvironmentEdgeManager.currentTime();
       try {
         while (isRunning() && keepAlive(lastUpdate)) {
-          final Procedure procedure = scheduler.poll(keepAliveTime, TimeUnit.MILLISECONDS);
-          if (procedure == null) continue;
+          this.activeProcedure = scheduler.poll(keepAliveTime, TimeUnit.MILLISECONDS);
+          if (this.activeProcedure == null) continue;
           int activeCount = activeExecutorCount.incrementAndGet();
           int runningCount = store.setRunningProcedureCount(activeCount);
           if (LOG.isDebugEnabled()) {
-            LOG.debug("Execute pid=" + procedure.getProcId() +
+            LOG.debug("Execute pid=" + this.activeProcedure.getProcId() +
                 " runningCount=" + runningCount + ", activeCount=" + activeCount);
           }
           executionStartTime.set(EnvironmentEdgeManager.currentTime());
           try {
-            executeProcedure(procedure);
+            executeProcedure(this.activeProcedure);
           } catch (AssertionError e) {
-            LOG.info("ASSERT pid=" + procedure.getProcId(), e);
+            LOG.info("ASSERT pid=" + this.activeProcedure.getProcId(), e);
             throw e;
           } finally {
             activeCount = activeExecutorCount.decrementAndGet();
             runningCount = store.setRunningProcedureCount(activeCount);
             if (LOG.isDebugEnabled()) {
-              LOG.debug("Leave pid=" + procedure.getProcId() +
+              LOG.debug("Halt pid=" + this.activeProcedure.getProcId() +
                   " runningCount=" + runningCount + ", activeCount=" + activeCount);
             }
+            this.activeProcedure = null;
             lastUpdate = EnvironmentEdgeManager.currentTime();
             executionStartTime.set(Long.MAX_VALUE);
           }
@@ -1666,6 +1674,12 @@ public class ProcedureExecutor<TEnvironment> {
         LOG.debug("Worker terminated.");
       }
       workerThreads.remove(this);
+    }
+
+    @Override
+    public String toString() {
+      Procedure p = this.activeProcedure;
+      return getName() + "(pid=" + (p == null? Procedure.NO_PROC_ID: p.getProcId() + ")");
     }
 
     /**

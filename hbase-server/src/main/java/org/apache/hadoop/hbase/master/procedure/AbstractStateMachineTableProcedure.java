@@ -29,7 +29,7 @@ import org.apache.hadoop.hbase.security.User;
 
 /**
  * Base class for all the Table procedures that want to use a StateMachineProcedure.
- * It provide some basic helpers like basic locking, sync latch, and basic toStringClassDetails().
+ * It provides helpers like basic locking, sync latch, and toStringClassDetails().
  */
 @InterfaceAudience.Private
 public abstract class AbstractStateMachineTableProcedure<TState>
@@ -52,9 +52,10 @@ public abstract class AbstractStateMachineTableProcedure<TState>
 
   protected AbstractStateMachineTableProcedure(final MasterProcedureEnv env,
       final ProcedurePrepareLatch latch) {
-    this.user = env.getRequestUser();
-    this.setOwner(user);
-
+    if (env != null) {
+      this.user = env.getRequestUser();
+      this.setOwner(user);
+    }
     // used for compatibility with clients without procedures
     // they need a sync TableExistsException, TableNotFoundException, TableNotDisabledException, ...
     this.syncLatch = latch;

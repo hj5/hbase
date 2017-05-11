@@ -67,8 +67,8 @@ import org.junit.rules.TestRule;
 @Category({MasterTests.class, MediumTests.class})
 public class TestSplitTableRegionProcedure {
   private static final Log LOG = LogFactory.getLog(TestSplitTableRegionProcedure.class);
-  @Rule public final TestRule timeout = CategoryBasedTimeout.builder().withTimeout(this.getClass()).
-      withLookingForStuckThread(true).build();
+  @Rule public final TestRule timeout = CategoryBasedTimeout.builder().
+      withTimeout(this.getClass()).withLookingForStuckThread(true).build();
 
   protected static final HBaseTestingUtility UTIL = new HBaseTestingUtility();
 
@@ -143,7 +143,7 @@ public class TestSplitTableRegionProcedure {
     verify(tableName, splitRowNum);
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testSplitTableRegionNoStoreFile() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
@@ -167,7 +167,7 @@ public class TestSplitTableRegionProcedure {
     assertTrue(UTIL.countRows(tableName) == 0);
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testSplitTableRegionUnevenDaughter() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
@@ -192,7 +192,7 @@ public class TestSplitTableRegionProcedure {
     verify(tableName, splitRowNum);
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testSplitTableRegionEmptyDaughter() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
@@ -221,7 +221,7 @@ public class TestSplitTableRegionProcedure {
     assertTrue(UTIL.countRows(daughters.get(0)) == 0 || UTIL.countRows(daughters.get(1)) == 0);
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testSplitTableRegionDeletedRowsDaughter() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
@@ -261,7 +261,7 @@ public class TestSplitTableRegionProcedure {
     assertTrue(UTIL.countRows(daughters.get(0)) == 0 || UTIL.countRows(daughters.get(1)) == 0);
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testInvalidSplitKey() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
@@ -284,7 +284,7 @@ public class TestSplitTableRegionProcedure {
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testRollbackAndDoubleExecution() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
@@ -318,7 +318,7 @@ public class TestSplitTableRegionProcedure {
     Bytes.toBytes(ColumnFamilyName1), Bytes.toBytes(ColumnFamilyName2));
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testRecoveryAndDoubleExecution() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();

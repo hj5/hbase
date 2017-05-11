@@ -1544,6 +1544,8 @@ public class RSRpcServices implements HBaseRPCErrorHandler,
       if (request.hasCompactionState() && request.getCompactionState()) {
         builder.setCompactionState(region.getCompactionState());
       }
+      builder.setSplittable(region.isSplittable());
+      builder.setMergeable(region.isMergeable());
       builder.setIsRecovering(region.isRecovering());
       return builder.build();
     } catch (IOException ie) {

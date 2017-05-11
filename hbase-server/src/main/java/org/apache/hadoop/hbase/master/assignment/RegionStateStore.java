@@ -125,7 +125,7 @@ public class RegionStateStore {
       final long openSeqNum = -1;
 
       // TODO: move under trace, now is visible for debugging
-      LOG.info(String.format("Load hbase:meta entry region=%s state=%s lastHost=%s regionLocation=%s",
+      LOG.info(String.format("Load hbase:meta entry region=%s regionState=%s lastHost=%s regionLocation=%s",
         regionInfo, state, lastHost, regionLocation));
 
       visitor.visitRegionState(regionInfo, state, regionLocation, lastHost, openSeqNum);
@@ -167,19 +167,19 @@ public class RegionStateStore {
     final Put put = new Put(MetaTableAccessor.getMetaKeyForRegion(regionInfo));
     MetaTableAccessor.addRegionInfo(put, regionInfo);
     final StringBuilder info = new StringBuilder("pid=" + pid + " updating hbase:meta row=");
-    info.append(regionInfo.getRegionNameAsString()).append(" with state=").append(state);
+    info.append(regionInfo.getRegionNameAsString()).append(", regionState=").append(state);
     if (openSeqNum >= 0) {
       Preconditions.checkArgument(state == State.OPEN && regionLocation != null,
           "Open region should be on a server");
       MetaTableAccessor.addLocation(put, regionLocation, openSeqNum, -1, replicaId);
       info.append(", openSeqNum=").append(openSeqNum);
-      info.append(", location=").append(regionLocation);
+      info.append(", regionLocation=").append(regionLocation);
     } else if (regionLocation != null && !regionLocation.equals(lastHost)) {
       // Ideally, if no regionLocation, write null to the hbase:meta but this will confuse clients
       // currently; they want a server to hit. TODO: Make clients wait if no location.
       put.addImmutable(HConstants.CATALOG_FAMILY, getServerNameColumn(replicaId),
           Bytes.toBytes(regionLocation.getServerName()));
-      info.append(", sn=").append(regionLocation);
+      info.append(", regionLocation=").append(regionLocation);
     }
     put.addImmutable(HConstants.CATALOG_FAMILY, getStateColumn(replicaId),
       Bytes.toBytes(state.name()));

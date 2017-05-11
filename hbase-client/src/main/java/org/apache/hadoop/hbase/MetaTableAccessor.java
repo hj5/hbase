@@ -1663,8 +1663,11 @@ public class MetaTableAccessor {
       Delete deleteA = makeDeleteFromRegionInfo(regionA, time);
       Delete deleteB = makeDeleteFromRegionInfo(regionB, time);
 
-      // The merged is a new region, openSeqNum = 1 is fine.
-      addLocation(putOfMerged, sn, 1, -1, mergedRegion.getReplicaId());
+      // The merged is a new region, openSeqNum = 1 is fine. ServerName may be null
+      // if crash after merge happened but before we got to here.. means in-memory
+      // locations of offlined merged, now-closed, regions is lost. Should be ok. We
+      // assign the merged region later.
+      if (sn != null) addLocation(putOfMerged, sn, 1, -1, mergedRegion.getReplicaId());
 
       // Add empty locations for region replicas of the merged region so that number of replicas can
       // be cached whenever the primary region is looked up from meta

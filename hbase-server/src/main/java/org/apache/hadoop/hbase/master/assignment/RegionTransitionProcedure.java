@@ -67,8 +67,6 @@ public abstract class RegionTransitionProcedure
       RegionTransitionState.REGION_TRANSITION_QUEUE;
   private HRegionInfo regionInfo;
   private volatile boolean lock = false;
-  // Server we assign or unassign from -- the target.
-  protected volatile ServerName server;
 
   public RegionTransitionProcedure() {
     // Required by the Procedure framework to create the procedure on replay
@@ -105,8 +103,6 @@ public abstract class RegionTransitionProcedure
     sb.append(getTableName());
     sb.append(", region=");
     sb.append(getRegionInfo() == null? null: getRegionInfo().getEncodedName());
-    sb.append(", tgt=");
-    sb.append(getServer());
   }
 
   public RegionStateNode getRegionState(final MasterProcedureEnv env) {
@@ -234,12 +230,18 @@ public abstract class RegionTransitionProcedure
   }
 
   @Override
+  protected void toStringState(StringBuilder builder) {
+    super.toStringState(builder);
+    RegionTransitionState ts = this.transitionState;
+    if (!isFinished() && ts != null) {
+      builder.append(":").append(ts);
+    }
+  }
+
+  @Override
   protected Procedure[] execute(final MasterProcedureEnv env) throws ProcedureSuspendedException {
     final AssignmentManager am = env.getAssignmentManager();
     final RegionStateNode regionNode = getRegionState(env);
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("" + transitionState + " " + this + "; " + regionNode.toShortString());
-    }
     if (!am.addRegionInTransition(regionNode, this)) {
       String msg = String.format(
         "There is already another procedure running on this region this=%s owner=%s",
@@ -262,6 +264,7 @@ public abstract class RegionTransitionProcedure
             }
             transitionState = RegionTransitionState.REGION_TRANSITION_DISPATCH;
             if (env.getProcedureScheduler().waitEvent(regionNode.getProcedureEvent(), this)) {
+              // Why this suspend? Because we want to ensure Store happens before proceed?
               throw new ProcedureSuspendedException();
             }
             break;
@@ -368,9 +371,5 @@ public abstract class RegionTransitionProcedure
     // The operation is triggered internally on the server
     // the client does not know about this procedure.
     return false;
-  }
-
-  public ServerName getServer() {
-    return this.server;
   }
 }

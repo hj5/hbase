@@ -1744,7 +1744,7 @@ public class HBaseTestingUtility extends HBaseCommonTestingUtility {
    */
   public void deleteTable(TableName tableName) throws IOException {
     try {
-      getAdmin().disableTableAsync(tableName);
+      getAdmin().disableTable(tableName);
     } catch (TableNotEnabledException e) {
       LOG.debug("Table: " + tableName + " already disabled, so just deleting it.");
     }
