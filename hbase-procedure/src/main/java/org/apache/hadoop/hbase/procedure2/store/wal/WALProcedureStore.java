@@ -246,6 +246,16 @@ public class WALProcedureStore extends ProcedureStoreBase {
       }
     };
     syncThread.start();
+
+    // Create archive dir up front. Rename won't work w/o it up on HDFS.
+    if (this.walArchiveDir != null && !this.fs.exists(this.walArchiveDir)) {
+      if (this.fs.mkdirs(this.walArchiveDir)) {
+        if (LOG.isDebugEnabled()) LOG.debug("Created Procedure Store WAL archive dir " +
+            this.walArchiveDir);
+      } else {
+        LOG.warn("Failed create of " + this.walArchiveDir);
+      }
+    }
   }
 
   @Override
@@ -1113,7 +1123,7 @@ public class WALProcedureStore extends ProcedureStoreBase {
       log.removeFile(walArchiveDir);
       logs.remove(log);
       if (LOG.isDebugEnabled()) {
-        LOG.info("Removed log=" + log + " activeLogs=" + logs);
+        LOG.info("Removed log=" + log + ", activeLogs=" + logs);
       }
       assert logs.size() > 0 : "expected at least one log";
     } catch (IOException e) {

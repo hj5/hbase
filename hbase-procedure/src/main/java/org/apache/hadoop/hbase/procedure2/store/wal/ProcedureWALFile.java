@@ -160,7 +160,7 @@ public class ProcedureWALFile implements Comparable<ProcedureWALFile> {
     boolean archived = false;
     if (walArchiveDir != null) {
       Path archivedFile = new Path(walArchiveDir, logFile.getName());
-      LOG.info("ARCHIVED (TODO: FILES ARE NOT PURGED FROM ARCHIVE!) " + logFile + " to " + walArchiveDir);
+      LOG.info("ARCHIVED (TODO: FILES ARE NOT PURGED FROM ARCHIVE!) " + logFile + " to " + archivedFile);
       if (!fs.rename(logFile, archivedFile)) {
         LOG.warn("Failed archive of " + logFile + ", deleting");
       } else {
