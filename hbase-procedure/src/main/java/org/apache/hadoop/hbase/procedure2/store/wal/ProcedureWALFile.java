@@ -26,7 +26,6 @@ import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.procedure2.store.ProcedureStoreTracker;
@@ -156,22 +155,23 @@ public class ProcedureWALFile implements Comparable<ProcedureWALFile> {
     this.logSize += size;
   }
 
-  public void removeFile() throws IOException {
+  public void removeFile(final Path walArchiveDir) throws IOException {
     close();
-    // TODO: FIX THIS. MAKE THIS ARCHIVE FORMAL.
-    Path archiveDir =
-        new Path(logFile.getParent().getParent(), HConstants.HFILE_ARCHIVE_DIRECTORY);
-    try {
-      fs.mkdirs(archiveDir);
-    } catch (IOException ioe) {
-      LOG.warn("Making " + archiveDir, ioe);
+    boolean archived = false;
+    if (walArchiveDir != null) {
+      Path archivedFile = new Path(walArchiveDir, logFile.getName());
+      LOG.info("ARCHIVED (TODO: FILES ARE NOT PURGED FROM ARCHIVE!) " + logFile + " to " + walArchiveDir);
+      if (!fs.rename(logFile, archivedFile)) {
+        LOG.warn("Failed archive of " + logFile + ", deleting");
+      } else {
+        archived = true;
+      }
     }
-    Path archivedFile = new Path(archiveDir, logFile.getName());
-    LOG.info("ARCHIVED WAL (TODO: FILES ARE NOT PURGED FROM ARCHIVE!) " + logFile + " to " + archivedFile);
-    if (!fs.rename(logFile, archivedFile)) {
-      LOG.warn("Failed archive of " + logFile);
+    if (!archived) {
+      if (!fs.delete(logFile, false)) {
+        LOG.warn("Failed delete of " + logFile);
+      }
     }
-    // fs.delete(logFile, false);
   }
 
   public void setProcIds(long minId, long maxId) {

@@ -124,6 +124,7 @@ public class WALProcedureStore extends ProcedureStoreBase {
   private final Configuration conf;
   private final FileSystem fs;
   private final Path walDir;
+  private final Path walArchiveDir;
 
   private final AtomicReference<Throwable> syncException = new AtomicReference<>();
   private final AtomicBoolean loading = new AtomicBoolean(true);
@@ -185,9 +186,15 @@ public class WALProcedureStore extends ProcedureStoreBase {
 
   public WALProcedureStore(final Configuration conf, final FileSystem fs, final Path walDir,
       final LeaseRecovery leaseRecovery) {
+    this(conf, fs, walDir, null, leaseRecovery);
+  }
+
+  public WALProcedureStore(final Configuration conf, final FileSystem fs, final Path walDir,
+      final Path walArchiveDir, final LeaseRecovery leaseRecovery) {
     this.fs = fs;
     this.conf = conf;
     this.walDir = walDir;
+    this.walArchiveDir = walArchiveDir;
     this.leaseRecovery = leaseRecovery;
   }
 
@@ -343,7 +350,7 @@ public class WALProcedureStore extends ProcedureStoreBase {
           if (LOG.isDebugEnabled()) {
             LOG.debug("Someone else created new logs. Expected maxLogId < " + flushLogId);
           }
-          logs.getLast().removeFile();
+          logs.getLast().removeFile(this.walArchiveDir);
           continue;
         }
 
@@ -955,7 +962,7 @@ public class WALProcedureStore extends ProcedureStoreBase {
     // but we should check if someone else has created new files
     if (getMaxLogId(getLogFiles()) > flushLogId) {
       LOG.warn("Someone else created new logs. Expected maxLogId < " + flushLogId);
-      logs.getLast().removeFile();
+      logs.getLast().removeFile(this.walArchiveDir);
       return false;
     }
 
@@ -1047,7 +1054,7 @@ public class WALProcedureStore extends ProcedureStoreBase {
     // We keep track of which procedures are holding the oldest WAL in 'holdingCleanupTracker'.
     // once there is nothing olding the oldest WAL we can remove it.
     while (logs.size() > 1 && holdingCleanupTracker.isEmpty()) {
-      removeLogFile(logs.getFirst());
+      removeLogFile(logs.getFirst(), walArchiveDir);
       buildHoldingCleanupTracker();
     }
 
@@ -1089,7 +1096,7 @@ public class WALProcedureStore extends ProcedureStoreBase {
       if (lastLogId < log.getLogId()) {
         break;
       }
-      removeLogFile(log);
+      removeLogFile(log, walArchiveDir);
       removed = true;
     }
 
@@ -1098,12 +1105,12 @@ public class WALProcedureStore extends ProcedureStoreBase {
     }
   }
 
-  private boolean removeLogFile(final ProcedureWALFile log) {
+  private boolean removeLogFile(final ProcedureWALFile log, final Path walArchiveDir) {
     try {
       if (LOG.isTraceEnabled()) {
         LOG.trace("Removing log=" + log);
       }
-      log.removeFile();
+      log.removeFile(walArchiveDir);
       logs.remove(log);
       if (LOG.isDebugEnabled()) {
         LOG.info("Removed log=" + log + " activeLogs=" + logs);
@@ -1192,7 +1199,7 @@ public class WALProcedureStore extends ProcedureStoreBase {
         }
 
         maxLogId = Math.max(maxLogId, getLogIdFromName(logPath.getName()));
-        ProcedureWALFile log = initOldLog(logFiles[i]);
+        ProcedureWALFile log = initOldLog(logFiles[i], this.walArchiveDir);
         if (log != null) {
           this.logs.add(log);
         }
@@ -1222,11 +1229,12 @@ public class WALProcedureStore extends ProcedureStoreBase {
   /**
    * Loads given log file and it's tracker.
    */
-  private ProcedureWALFile initOldLog(final FileStatus logFile) throws IOException {
+  private ProcedureWALFile initOldLog(final FileStatus logFile, final Path walArchiveDir)
+  throws IOException {
     final ProcedureWALFile log = new ProcedureWALFile(fs, logFile);
     if (logFile.getLen() == 0) {
       LOG.warn("Remove uninitialized log: " + logFile);
-      log.removeFile();
+      log.removeFile(walArchiveDir);
       return null;
     }
     if (LOG.isDebugEnabled()) {
@@ -1236,7 +1244,7 @@ public class WALProcedureStore extends ProcedureStoreBase {
       log.open();
     } catch (ProcedureWALFormat.InvalidWALDataException e) {
       LOG.warn("Remove uninitialized log: " + logFile, e);
-      log.removeFile();
+      log.removeFile(walArchiveDir);
       return null;
     } catch (IOException e) {
       String msg = "Unable to read state log: " + logFile;
