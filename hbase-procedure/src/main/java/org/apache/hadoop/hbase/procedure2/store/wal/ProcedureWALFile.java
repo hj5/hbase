@@ -167,8 +167,10 @@ public class ProcedureWALFile implements Comparable<ProcedureWALFile> {
       LOG.warn("Making " + archiveDir, ioe);
     }
     Path archivedFile = new Path(archiveDir, logFile.getName());
-    LOG.info("ARCHIVED WAL (FIX) " + logFile + " to " + archivedFile);
-    fs.rename(logFile, archivedFile);
+    LOG.info("ARCHIVED WAL (TODO: FILES ARE NOT PURGED FROM ARCHIVE!) " + logFile + " to " + archivedFile);
+    if (!fs.rename(logFile, archivedFile)) {
+      LOG.warn("Failed archive of " + logFile);
+    }
     // fs.delete(logFile, false);
   }
 

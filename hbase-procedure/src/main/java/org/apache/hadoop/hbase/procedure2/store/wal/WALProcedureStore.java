@@ -1079,8 +1079,8 @@ public class WALProcedureStore extends ProcedureStoreBase {
   private void removeAllLogs(long lastLogId) {
     if (logs.size() <= 1) return;
 
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Remove all state logs with ID less than " + lastLogId);
+    if (LOG.isTraceEnabled()) {
+      LOG.trace("Remove all state logs with ID less than " + lastLogId);
     }
 
     boolean removed = false;
