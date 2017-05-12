@@ -50,6 +50,9 @@ public abstract class AbstractStateMachineTableProcedure<TState>
     this(env, null);
   }
 
+  /**
+   * @param env Uses this to set Procedure Owner at least.
+   */
   protected AbstractStateMachineTableProcedure(final MasterProcedureEnv env,
       final ProcedurePrepareLatch latch) {
     if (env != null) {

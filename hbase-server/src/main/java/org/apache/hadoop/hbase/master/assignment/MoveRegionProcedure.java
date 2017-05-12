@@ -52,7 +52,8 @@ public class MoveRegionProcedure extends AbstractStateMachineRegionProcedure<Mov
     super();
   }
 
-  public MoveRegionProcedure(final RegionPlan plan) {
+  public MoveRegionProcedure(final MasterProcedureEnv env, final RegionPlan plan) {
+    super(env, plan.getRegionInfo());
     assert plan.getDestination() != null: plan.toString();
     this.plan = plan;
   }

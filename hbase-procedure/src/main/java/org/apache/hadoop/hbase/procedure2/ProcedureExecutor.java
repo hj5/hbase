@@ -1669,7 +1669,7 @@ public class ProcedureExecutor<TEnvironment> {
           }
         }
       } catch (Throwable t) {
-        LOG.warn("Worker terminating because....", t);
+        LOG.warn("Worker terminating UNNATURALLY " + this.activeProcedure, t);
       } finally {
         LOG.debug("Worker terminated.");
       }

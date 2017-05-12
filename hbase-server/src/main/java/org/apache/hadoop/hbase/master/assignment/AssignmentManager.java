@@ -720,9 +720,7 @@ public class AssignmentManager implements ServerListener {
   }
 
   public MoveRegionProcedure createMoveRegionProcedure(final RegionPlan plan) {
-    MoveRegionProcedure proc = new MoveRegionProcedure(plan);
-    proc.setOwner(getProcedureEnvironment().getRequestUser().getShortName());
-    return proc;
+    return new MoveRegionProcedure(getProcedureEnvironment(), plan);
   }
 
 
