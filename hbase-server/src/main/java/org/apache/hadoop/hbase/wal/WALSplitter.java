@@ -1595,8 +1595,10 @@ public class WALSplitter {
           if (wap == null) {
             wap = getWriterAndPath(logEntry);
             if (wap == null) {
-              if (LOG.isDebugEnabled()) {
-                LOG.debug("getWriterAndPath decided we don't need to write edits for " + logEntry);
+              if (LOG.isTraceEnabled()) {
+                // This log spews the full edit. Can be massive in the log. Enable only debugging
+                // WAL lost edit issues.
+                LOG.trace("getWriterAndPath decided we don't need to write edits for " + logEntry);
               }
               return;
             }

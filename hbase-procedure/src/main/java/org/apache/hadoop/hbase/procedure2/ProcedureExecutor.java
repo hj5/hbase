@@ -1526,17 +1526,13 @@ public class ProcedureExecutor<TEnvironment> {
     }
 
     // If this procedure is the last child awake the parent procedure
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Finish suprocedure " + procedure);
-    }
+    LOG.info("Finish suprocedure " + procedure);
     if (parent.tryRunnable()) {
       // If we succeeded in making the parent runnable -- i.e. all of its
       // children have completed, move parent to front of the queue.
       store.update(parent);
       scheduler.addFront(parent);
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Finished subprocedure(s) of " + parent + "; resume parent processing.");
-      }
+      LOG.info("Finished subprocedure(s) of " + parent + "; resume parent processing.");
       return;
     }
   }
@@ -1646,8 +1642,8 @@ public class ProcedureExecutor<TEnvironment> {
           if (this.activeProcedure == null) continue;
           int activeCount = activeExecutorCount.incrementAndGet();
           int runningCount = store.setRunningProcedureCount(activeCount);
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Execute pid=" + this.activeProcedure.getProcId() +
+          if (LOG.isTraceEnabled()) {
+            LOG.trace("Execute pid=" + this.activeProcedure.getProcId() +
                 " runningCount=" + runningCount + ", activeCount=" + activeCount);
           }
           executionStartTime.set(EnvironmentEdgeManager.currentTime());
@@ -1659,8 +1655,8 @@ public class ProcedureExecutor<TEnvironment> {
           } finally {
             activeCount = activeExecutorCount.decrementAndGet();
             runningCount = store.setRunningProcedureCount(activeCount);
-            if (LOG.isDebugEnabled()) {
-              LOG.debug("Halt pid=" + this.activeProcedure.getProcId() +
+            if (LOG.isTraceEnabled()) {
+              LOG.trace("Halt pid=" + this.activeProcedure.getProcId() +
                   " runningCount=" + runningCount + ", activeCount=" + activeCount);
             }
             this.activeProcedure = null;

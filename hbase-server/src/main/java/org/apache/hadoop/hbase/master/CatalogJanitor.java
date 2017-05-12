@@ -211,14 +211,12 @@ public class CatalogJanitor extends ScheduledChore {
       LOG.warn("Merged region does not exist: " + mergedRegion.getEncodedName());
     }
     if (regionFs == null || !regionFs.hasReferences(htd)) {
-      LOG.debug("Deleting region " + regionA.getRegionNameAsString() + " and "
-          + regionB.getRegionNameAsString()
+      LOG.debug("Deleting region " + regionA.getShortNameToLog() + " and "
+          + regionB.getShortNameToLog()
           + " from fs because merged region no longer holds references");
       ProcedureExecutor<MasterProcedureEnv> pe = this.services.getMasterProcedureExecutor();
-      GCMergedRegionsProcedure proc =
-          new GCMergedRegionsProcedure(pe.getEnvironment(),mergedRegion,  regionA, regionB);
-      proc.setOwner(pe.getEnvironment().getRequestUser().getShortName());
-      pe.submitProcedure(proc);
+      pe.submitProcedure(new GCMergedRegionsProcedure(pe.getEnvironment(),mergedRegion,
+          regionA, regionB));
       return true;
     }
     return false;
@@ -254,10 +252,10 @@ public class CatalogJanitor extends ScheduledChore {
         HRegionInfo regionB = p.getSecond();
         if (regionA == null || regionB == null) {
           LOG.warn("Unexpected references regionA="
-              + (regionA == null ? "null" : regionA.getRegionNameAsString())
+              + (regionA == null ? "null" : regionA.getShortNameToLog())
               + ",regionB="
-              + (regionB == null ? "null" : regionB.getRegionNameAsString())
-              + " in merged region " + e.getKey().getRegionNameAsString());
+              + (regionB == null ? "null" : regionB.getShortNameToLog())
+              + " in merged region " + e.getKey().getShortNameToLog());
         } else {
           if (cleanMergeRegion(e.getKey(), regionA, regionB)) {
             result++;
@@ -345,11 +343,10 @@ public class CatalogJanitor extends ScheduledChore {
     Pair<Boolean, Boolean> b = checkDaughterInFs(parent, daughters.getSecond());
     if (hasNoReferences(a) && hasNoReferences(b)) {
       LOG.debug("Deleting region " + parent.getShortNameToLog() +
-        " because daughters -- " + daughters.getFirst() + ", " + daughters.getSecond() +
+        " because daughters -- " + daughters.getFirst().getShortNameToLog() + ", " +
+          daughters.getSecond().getShortNameToLog() +
         " -- no longer hold references");
       ProcedureExecutor<MasterProcedureEnv> pe = this.services.getMasterProcedureExecutor();
-      GCRegionProcedure proc = new GCRegionProcedure(pe.getEnvironment(), parent);
-      proc.setOwner(pe.getEnvironment().getRequestUser().getShortName());
       pe.submitProcedure(new GCRegionProcedure(pe.getEnvironment(), parent));
       return true;
     }

@@ -1277,13 +1277,19 @@ public class HMaster extends HRegionServer implements MasterServices {
         // ignore the force flag in that case
         boolean metaInTransition = assignmentManager.isMetaRegionInTransition();
         String prefix = force && !metaInTransition ? "R" : "Not r";
-        LOG.debug(prefix + "unning balancer because " + regionsInTransition.size() +
-          " region(s) in transition: " + org.apache.commons.lang.StringUtils.
-            abbreviate(regionsInTransition.toString(), 256));
+        List<RegionStateNode> toPrint = regionsInTransition;
+        int max = 5;
+        boolean truncated = false;
+        if (regionsInTransition.size() > max) {
+          toPrint = regionsInTransition.subList(0, max);
+          truncated = true;
+        }
+        LOG.info(prefix + "unning balancer because " + regionsInTransition.size() +
+          " region(s) in transition: " + toPrint + (truncated? "(truncated list)": ""));
         if (!force || metaInTransition) return false;
       }
       if (this.serverManager.areDeadServersInProgress()) {
-        LOG.debug("Not running balancer because processing dead regionserver(s): " +
+        LOG.info("Not running balancer because processing dead regionserver(s): " +
           this.serverManager.getDeadServers());
         return false;
       }
