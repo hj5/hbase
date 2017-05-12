@@ -1111,9 +1111,8 @@ public class HMaster extends HRegionServer implements MasterServices {
     final MasterProcedureEnv procEnv = new MasterProcedureEnv(this);
     final Path walDir = new Path(FSUtils.getWALRootDir(this.conf),
         MasterProcedureConstants.MASTER_PROCEDURE_LOGDIR);
-    final Path walArchiveDir = new Path(HFileArchiveUtil.getArchivePath(this.conf),
-        MasterProcedureConstants.MASTER_PROCEDURE_LOGDIR);
-
+    // TODO: No cleaner currently!
+    final Path walArchiveDir = new Path(walDir, HConstants.HFILE_ARCHIVE_DIRECTORY);
     procedureStore = new WALProcedureStore(conf, walDir.getFileSystem(conf), walDir, walArchiveDir,
         new MasterProcedureEnv.WALStoreLeaseRecovery(this));
     procedureStore.registerListener(new MasterProcedureEnv.MasterProcedureStoreListener(this));

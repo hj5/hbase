@@ -66,6 +66,7 @@ import com.google.common.annotations.VisibleForTesting;
 @InterfaceStability.Evolving
 public class WALProcedureStore extends ProcedureStoreBase {
   private static final Log LOG = LogFactory.getLog(WALProcedureStore.class);
+  public static final String LOG_PREFIX = "pv2-";
 
   public interface LeaseRecovery {
     void recoverFileLease(FileSystem fs, Path path) throws IOException;
@@ -1145,7 +1146,7 @@ public class WALProcedureStore extends ProcedureStoreBase {
   }
 
   protected Path getLogFilePath(final long logId) throws IOException {
-    return new Path(walDir, String.format("state-%020d.log", logId));
+    return new Path(walDir, String.format(LOG_PREFIX + "%020d.log", logId));
   }
 
   private static long getLogIdFromName(final String name) {
@@ -1158,7 +1159,7 @@ public class WALProcedureStore extends ProcedureStoreBase {
     @Override
     public boolean accept(Path path) {
       String name = path.getName();
-      return name.startsWith("state-") && name.endsWith(".log");
+      return name.startsWith(LOG_PREFIX) && name.endsWith(".log");
     }
   };
 
@@ -1248,7 +1249,7 @@ public class WALProcedureStore extends ProcedureStoreBase {
       return null;
     }
     if (LOG.isDebugEnabled()) {
-      LOG.debug("Opening state-log: " + logFile);
+      LOG.debug("Opening Pv2 " + logFile);
     }
     try {
       log.open();
