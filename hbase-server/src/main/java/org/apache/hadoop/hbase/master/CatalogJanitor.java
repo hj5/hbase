@@ -45,6 +45,7 @@ import org.apache.hadoop.hbase.master.assignment.AssignmentManager;
 import org.apache.hadoop.hbase.master.assignment.GCMergedRegionsProcedure;
 import org.apache.hadoop.hbase.master.assignment.GCRegionProcedure;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
+import org.apache.hadoop.hbase.procedure2.Procedure;
 import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
 import org.apache.hadoop.hbase.regionserver.HRegionFileSystem;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -53,6 +54,8 @@ import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.util.PairOfSameType;
 import org.apache.hadoop.hbase.util.Threads;
 import org.apache.hadoop.hbase.util.Triple;
+
+import com.google.common.annotations.VisibleForTesting;
 
 /**
  * A janitor for the catalog tables.  Scans the <code>hbase:meta</code> catalog
@@ -66,6 +69,7 @@ public class CatalogJanitor extends ScheduledChore {
   private final AtomicBoolean enabled = new AtomicBoolean(true);
   private final MasterServices services;
   private final Connection connection;
+  // PID of the last Procedure launched herein. Keep around for Tests.
 
   CatalogJanitor(final MasterServices services) {
     super("CatalogJanitor-" + services.getServerName().toShortString(), services,
@@ -215,8 +219,8 @@ public class CatalogJanitor extends ScheduledChore {
           + regionB.getShortNameToLog()
           + " from fs because merged region no longer holds references");
       ProcedureExecutor<MasterProcedureEnv> pe = this.services.getMasterProcedureExecutor();
-      pe.submitProcedure(new GCMergedRegionsProcedure(pe.getEnvironment(),mergedRegion,
-          regionA, regionB));
+      pe.submitProcedure(new GCMergedRegionsProcedure(pe.getEnvironment(),
+          mergedRegion, regionA, regionB));
       return true;
     }
     return false;

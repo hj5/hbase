@@ -77,6 +77,7 @@ import org.apache.hadoop.hbase.master.RegionState.State;
 import org.apache.hadoop.hbase.master.assignment.AssignmentManager;
 import org.apache.hadoop.hbase.master.assignment.RegionStates;
 import org.apache.hadoop.hbase.master.NoSuchProcedureException;
+import org.apache.hadoop.hbase.procedure2.Procedure;
 import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionContext;
 import org.apache.hadoop.hbase.regionserver.throttle.NoLimitThroughputController;
@@ -534,7 +535,7 @@ public class TestSplitTransactionOnCluster {
       cluster.getMaster().setCatalogJanitorEnabled(true);
       LOG.info("Starting run of CatalogJanitor");
       cluster.getMaster().getCatalogJanitor().run();
-      LOG.info("Finished run of CatalogJanitor");
+      ProcedureTestingUtility.waitAllProcedures(cluster.getMaster().getMasterProcedureExecutor());
       RegionStates regionStates = master.getAssignmentManager().getRegionStates();
       ServerName regionServerOfRegion = regionStates.getRegionServerOfRegion(hri);
       assertEquals(null, regionServerOfRegion);

@@ -53,6 +53,7 @@ import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.io.Reference;
 import org.apache.hadoop.hbase.master.CatalogJanitor.SplitParentFirstComparator;
 import org.apache.hadoop.hbase.master.assignment.MockMasterServices;
+import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility;
 import org.apache.hadoop.hbase.regionserver.ChunkCreator;
 import org.apache.hadoop.hbase.regionserver.HStore;
 import org.apache.hadoop.hbase.regionserver.MemStoreLABImpl;
@@ -135,14 +136,14 @@ public class TestCatalogJanitor {
     // Add a parentdir for kicks so can check it gets removed by the catalogjanitor.
     fs.mkdirs(parentdir);
     assertFalse(this.janitor.cleanParent(parent, r));
+    ProcedureTestingUtility.waitAllProcedures(masterServices.getMasterProcedureExecutor());
+    assertTrue(fs.exists(parentdir));
     // Remove the reference file and try again.
     assertTrue(fs.delete(p, true));
     assertTrue(this.janitor.cleanParent(parent, r));
     // Parent cleanup is run async as a procedure. Make sure parentdir is removed.
-    LOG.info("Waiting on " + parentdir);
-    while (fs.exists(parentdir)) {
-      Threads.sleep(10);
-    }
+    ProcedureTestingUtility.waitAllProcedures(masterServices.getMasterProcedureExecutor());
+    assertTrue(!fs.exists(parentdir));
   }
 
   /**
@@ -455,10 +456,8 @@ public class TestCatalogJanitor {
     assertTrue(janitor.cleanParent(parent, parentMetaRow));
     Path parentDir = new Path(tabledir, parent.getEncodedName());
     // Cleanup procedure runs async. Wait till it done.
-    LOG.info("Waiting on parent " + parentDir);
-    while (fs.exists(parentDir)) {
-      Threads.sleep(10);
-    }
+    ProcedureTestingUtility.waitAllProcedures(masterServices.getMasterProcedureExecutor());
+    assertTrue(!fs.exists(parentDir));
     LOG.debug("Finished cleanup of parent region");
 
     // and now check to make sure that the files have actually been archived
@@ -525,11 +524,8 @@ public class TestCatalogJanitor {
     // Do the cleaning of the parent
     assertTrue(janitor.cleanParent(parent, r));
     Path parentDir = new Path(tabledir, parent.getEncodedName());
-    // Cleanup procedure runs async. Wait till it done.
-    LOG.info("Waiting on parent " + parentDir);
-    while (fs.exists(parentDir)) {
-      Threads.sleep(10);
-    }
+    ProcedureTestingUtility.waitAllProcedures(masterServices.getMasterProcedureExecutor());
+    assertTrue(!fs.exists(parentDir));
 
     // And now check to make sure that the files have actually been archived
     FileStatus[] archivedStoreFiles = fs.listStatus(storeArchive);
@@ -542,10 +538,8 @@ public class TestCatalogJanitor {
     // Do the cleaning of the parent
     assertTrue(janitor.cleanParent(parent, r));
     // Cleanup procedure runs async. Wait till it done.
-    LOG.info("Waiting on parent " + parentDir);
-    while (fs.exists(parentDir)) {
-      Threads.sleep(10);
-    }
+    ProcedureTestingUtility.waitAllProcedures(masterServices.getMasterProcedureExecutor());
+    assertTrue(!fs.exists(parentDir));
 
     // and now check to make sure that the files have actually been archived
     archivedStoreFiles = fs.listStatus(storeArchive);
