@@ -18,6 +18,7 @@
 package org.apache.hadoop.hbase.master.procedure;
 
 import org.apache.hadoop.hbase.HBaseIOException;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 
 /**
@@ -28,16 +29,18 @@ import org.apache.hadoop.hbase.classification.InterfaceAudience;
 @SuppressWarnings("serial")
 public class ServerCrashException extends HBaseIOException {
   private final long procId;
+  private final ServerName serverName;
 
   /**
    * @param server The server that crashed.
    */
-  public ServerCrashException(long procId) {
+  public ServerCrashException(long procId, ServerName serverName) {
     this.procId = procId;
+    this.serverName = serverName;
   }
 
   @Override
   public String getMessage() {
-    return "Caused by ServerCrashProcedure pid=" + this.procId;
+    return "ServerCrashProcedure pid=" + this.procId + ", server=" + this.serverName;
   }
 }

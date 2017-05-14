@@ -327,4 +327,12 @@ public class AssignProcedure extends RegionTransitionProcedure {
     super.toStringClassDetails(sb);
     if (this.targetServer != null) sb.append(", target=").append(this.targetServer);
   }
+
+  @Override
+  public ServerName getServer(final MasterProcedureEnv env) {
+    RegionStateNode node =
+        env.getAssignmentManager().getRegionStates().getRegionNode(this.getRegionInfo());
+    if (node == null) return null;
+    return node.getRegionLocation();
+  }
 }

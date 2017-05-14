@@ -413,11 +413,21 @@ implements ServerProcedureInterface {
       final HRegionInfo hri = it.next();
       RegionTransitionProcedure rtp = am.getRegionStates().getRegionTransitionProcedure(hri);
       if (rtp == null) continue;
+      // Make sure the RIT is against this crashed server. In the case where there are many
+      // processings of a crashed server -- backed up for whatever reason (slow WAL split) --
+      // then a previous SCP may have already failed an assign, etc., and it may have a new
+      // location target; DO NOT fail these else we make for assign flux.
+      ServerName rtpServerName = rtp.getServer(env);
+      if (rtpServerName == null) {
+        LOG.warn("RIT with ServerName null! " + rtp);
+        continue;
+      }
+      if (!rtpServerName.equals(this.serverName)) continue;
       LOG.info("pid=" + getProcId() + " found RIT " + rtp + "; " +
-      rtp.getRegionState(env).toShortString());
+        rtp.getRegionState(env).toShortString());
       // Notify RIT on server crash.
       if (sce == null) {
-        sce = new ServerCrashException(getProcId());
+        sce = new ServerCrashException(getProcId(), getServerName());
       }
       rtp.remoteCallFailed(env, this.serverName, sce);
       if (rtp instanceof AssignProcedure) {

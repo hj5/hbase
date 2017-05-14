@@ -372,4 +372,10 @@ public abstract class RegionTransitionProcedure
     // the client does not know about this procedure.
     return false;
   }
+
+  /**
+   * Used by ServerCrashProcedure to see if this Assign/Unassign needs processing.
+   * @return ServerName the Assign or Unassign is going against.
+   */
+  public abstract ServerName getServer(final MasterProcedureEnv env);
 }

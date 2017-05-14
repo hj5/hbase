@@ -239,4 +239,9 @@ public class UnassignProcedure extends RegionTransitionProcedure {
     super.toStringClassDetails(sb);
     sb.append(", server=").append(this.destinationServer);
   }
+
+  @Override
+  public ServerName getServer(final MasterProcedureEnv env) {
+    return this.destinationServer;
+  }
 }
