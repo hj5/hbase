@@ -365,6 +365,7 @@ public class SplitTableRegionProcedure
         GetRegionInfoResponse response =
             Util.getRegionInfoResponse(env, node.getRegionLocation(), node.getRegionInfo());
         splittable = response.hasSplittable() && response.getSplittable();
+        LOG.info("REMOVE splittable " + splittable + " " + this + " " + node);
       } catch (IOException e) {
         splittableCheckIOE = e;
       }

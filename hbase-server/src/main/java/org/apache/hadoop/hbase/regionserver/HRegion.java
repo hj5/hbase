@@ -1382,7 +1382,9 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
 
   @Override
   public boolean isSplittable() {
-    return isAvailable() && !hasReferences();
+    boolean result = isAvailable() && !hasReferences();
+    LOG.info("ASKED IF SPLITTABLE " + result, new Throwable("LOGGING"));
+    return result;
   }
 
   @Override
