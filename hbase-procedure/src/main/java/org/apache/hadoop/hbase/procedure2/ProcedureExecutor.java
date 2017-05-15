@@ -1147,7 +1147,7 @@ public class ProcedureExecutor<TEnvironment> {
           scheduler.yield(proc);
           break;
         case LOCK_EVENT_WAIT:
-          // someone will wake us up when the lock is available
+          // Someone will wake us up when the lock is available
           LOG.debug(lockState + " " + proc);
           break;
         default:

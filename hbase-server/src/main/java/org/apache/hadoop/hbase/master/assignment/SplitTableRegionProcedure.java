@@ -341,19 +341,21 @@ public class SplitTableRegionProcedure
     if (node != null) {
       parentHRI = node.getRegionInfo();
 
+      // Lookup the parent HRI state from the AM, which has the latest updated info.
+      // Protect against the case where concurrent SPLIT requests came in. Check a SPLIT
+      // did not just run.
+      if (parentHRI.isSplit() || parentHRI.isOffline()) {
+        setFailure(new IOException("Split " + parentHRI.getRegionNameAsString() + " FAILED because " +
+            "offline/split already."));
+        return false;
+      }
+
       // expected parent to be online or closed
       if (!node.isInState(EXPECTED_SPLIT_STATES)) {
         // We may have SPLIT already?
         setFailure(new IOException("Split " + parentHRI.getRegionNameAsString() +
             " FAILED because state=" + node.getState() + "; expected " +
             Arrays.toString(EXPECTED_SPLIT_STATES)));
-        return false;
-      }
-
-      // lookup the parent HRI state from the AM, which has the latest updated info.
-      if (parentHRI.isSplit() || parentHRI.isOffline()) {
-        setFailure(new IOException("Split " + parentHRI.getRegionNameAsString() + " FAILED because " +
-            "offline/split already."));
         return false;
       }
 
@@ -365,7 +367,9 @@ public class SplitTableRegionProcedure
         GetRegionInfoResponse response =
             Util.getRegionInfoResponse(env, node.getRegionLocation(), node.getRegionInfo());
         splittable = response.hasSplittable() && response.getSplittable();
-        LOG.info("REMOVE splittable " + splittable + " " + this + " " + node);
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Splittable=" + splittable + " " + this + " " + node.toShortString());
+        }
       } catch (IOException e) {
         splittableCheckIOE = e;
       }

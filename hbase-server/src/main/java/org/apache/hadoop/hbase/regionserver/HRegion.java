@@ -7790,6 +7790,11 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
       return null;
     }
 
+    // Can't split a region that is closing.
+    if (this.isClosing()) {
+      return null;
+    }
+
     if (!splitPolicy.shouldSplit()) {
       return null;
     }
