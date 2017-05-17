@@ -346,9 +346,12 @@ public class CatalogJanitor extends ScheduledChore {
     Pair<Boolean, Boolean> a = checkDaughterInFs(parent, daughters.getFirst());
     Pair<Boolean, Boolean> b = checkDaughterInFs(parent, daughters.getSecond());
     if (hasNoReferences(a) && hasNoReferences(b)) {
+      String daughterA = daughters.getFirst() != null?
+          daughters.getFirst().getShortNameToLog(): "null";
+      String daughterB = daughters.getSecond() != null?
+          daughters.getSecond().getShortNameToLog(): "null";
       LOG.debug("Deleting region " + parent.getShortNameToLog() +
-        " because daughters -- " + daughters.getFirst().getShortNameToLog() + ", " +
-          daughters.getSecond().getShortNameToLog() +
+        " because daughters -- " + daughterA + ", " + daughterB +
         " -- no longer hold references");
       ProcedureExecutor<MasterProcedureEnv> pe = this.services.getMasterProcedureExecutor();
       pe.submitProcedure(new GCRegionProcedure(pe.getEnvironment(), parent));
