@@ -345,8 +345,8 @@ public class SplitTableRegionProcedure
       // Protect against the case where concurrent SPLIT requests came in. Check a SPLIT
       // did not just run.
       if (parentHRI.isSplit() || parentHRI.isOffline()) {
-        setFailure(new IOException("Split " + parentHRI.getRegionNameAsString() + " FAILED because " +
-            "offline/split already."));
+        LOG.info("Split of " + parentHRI.getShortNameToLog() +
+            " skipped because already offline/split.");
         return false;
       }
 
