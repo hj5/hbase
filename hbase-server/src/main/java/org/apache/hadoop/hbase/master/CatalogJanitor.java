@@ -50,6 +50,7 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.util.PairOfSameType;
+import org.apache.hadoop.hbase.util.Threads;
 import org.apache.hadoop.hbase.util.Triple;
 
 /**
@@ -88,7 +89,17 @@ public class CatalogJanitor extends ScheduledChore {
    * @param enabled
    */
   public boolean setEnabled(final boolean enabled) {
-    return this.enabled.getAndSet(enabled);
+    boolean alreadyEnabled = this.enabled.getAndSet(enabled);
+    // If disabling is requested on an already enabled chore, we could have an active
+    // scan still going on, callers might not be aware of that and do further action thinkng
+    // that no action would be from this chore.  In this case, the right action is to wait for
+    // the active scan to complete before exiting this function.
+    if (!enabled && alreadyEnabled) {
+      while (alreadyRunning.get()) {
+        Threads.sleepWithoutInterrupt(100);
+      }
+    }
+    return alreadyEnabled;
   }
 
   boolean getEnabled() {
@@ -98,7 +109,12 @@ public class CatalogJanitor extends ScheduledChore {
   @Override
   protected void chore() {
     try {
-      if (this.enabled.get()) {
+      AssignmentManager am = this.services.getAssignmentManager();
+      if (this.enabled.get()
+          && !this.services.isInMaintenanceMode()
+          && am != null
+          && am.isFailoverCleanupDone()
+          && am.getRegionStates().getRegionsInTransition().size() == 0) {
         scan();
       } else {
         LOG.warn("CatalogJanitor disabled! Not running scan.");
@@ -200,8 +216,9 @@ public class CatalogJanitor extends ScheduledChore {
           + " from fs because merged region no longer holds references");
       HFileArchiver.archiveRegion(this.services.getConfiguration(), fs, regionA);
       HFileArchiver.archiveRegion(this.services.getConfiguration(), fs, regionB);
-      MetaTableAccessor.deleteMergeQualifiers(server.getConnection(),
-        mergedRegion);
+      MetaTableAccessor.deleteMergeQualifiers(services.getConnection(), mergedRegion);
+      services.getServerManager().removeRegion(regionA);
+      services.getServerManager().removeRegion(regionB);
       return true;
     }
     return false;
@@ -227,6 +244,11 @@ public class CatalogJanitor extends ScheduledChore {
       int mergeCleaned = 0;
       Map<HRegionInfo, Result> mergedRegions = scanTriple.getSecond();
       for (Map.Entry<HRegionInfo, Result> e : mergedRegions.entrySet()) {
+        if (this.services.isInMaintenanceMode()) {
+          // Stop cleaning if the master is in maintenance mode
+          break;
+        }
+
         HRegionInfo regionA = HRegionInfo.getHRegionInfo(e.getValue(),
             HConstants.MERGEA_QUALIFIER);
         HRegionInfo regionB = HRegionInfo.getHRegionInfo(e.getValue(),
@@ -253,6 +275,11 @@ public class CatalogJanitor extends ScheduledChore {
       // regions whose parents are still around
       HashSet<String> parentNotCleaned = new HashSet<String>();
       for (Map.Entry<HRegionInfo, Result> e : splitParents.entrySet()) {
+        if (this.services.isInMaintenanceMode()) {
+          // Stop cleaning if the master is in maintenance mode
+          break;
+        }
+
         if (!parentNotCleaned.contains(e.getKey().getEncodedName()) &&
             cleanParent(e.getKey(), e.getValue())) {
           splitCleaned++;
@@ -334,6 +361,7 @@ public class CatalogJanitor extends ScheduledChore {
       if (LOG.isTraceEnabled()) LOG.trace("Archiving parent region: " + parent);
       HFileArchiver.archiveRegion(this.services.getConfiguration(), fs, parent);
       MetaTableAccessor.deleteRegion(this.connection, parent);
+      services.getServerManager().removeRegion(parent);
       result = true;
     }
     return result;

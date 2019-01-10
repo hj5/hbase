@@ -20,16 +20,28 @@
 include Java
 java_import java.util.concurrent.TimeUnit
 java_import org.apache.hadoop.hbase.TableName
+java_import org.apache.hadoop.hbase.ServerName
 java_import org.apache.hadoop.hbase.quotas.ThrottleType
 java_import org.apache.hadoop.hbase.quotas.QuotaFilter
 java_import org.apache.hadoop.hbase.quotas.QuotaRetriever
 java_import org.apache.hadoop.hbase.quotas.QuotaSettingsFactory
+java_import org.apache.hadoop.hbase.quotas.QuotaTableUtil
+java_import org.apache.hadoop.hbase.quotas.SpaceViolationPolicy
 
 module HBaseQuotasConstants
+  # RPC Quota constants
   GLOBAL_BYPASS = 'GLOBAL_BYPASS'
   THROTTLE_TYPE = 'THROTTLE_TYPE'
   THROTTLE = 'THROTTLE'
   REQUEST = 'REQUEST'
+  WRITE = 'WRITE'
+  READ = 'READ'
+  # Space quota constants
+  SPACE = 'SPACE'
+  NO_INSERTS = 'NO_INSERTS'
+  NO_WRITES = 'NO_WRITES'
+  NO_WRITES_COMPACTIONS = 'NO_WRITES_COMPACTIONS'
+  DISABLE = 'DISABLE'
 end
 
 module Hbase
@@ -46,6 +58,7 @@ module Hbase
     def throttle(args)
       raise(ArgumentError, "Arguments should be a Hash") unless args.kind_of?(Hash)
       type = args.fetch(THROTTLE_TYPE, REQUEST)
+      args.delete(THROTTLE_TYPE)
       type, limit, time_unit = _parse_limit(args.delete(LIMIT), ThrottleType, type)
       if args.has_key?(USER)
         user = args.delete(USER)
@@ -103,6 +116,56 @@ module Hbase
         raise "One of USER, TABLE or NAMESPACE must be specified"
       end
       @admin.setQuota(settings)
+    end
+
+    def limit_space(args)
+      raise(ArgumentError, 'Argument should be a Hash') unless args.kind_of?(Hash)
+      # Let the user provide a raw number
+      if args[LIMIT].is_a?(Numeric)
+        limit = args[LIMIT]
+      else
+        # Parse a string a 1K, 2G, etc.
+        limit = _parse_size(args[LIMIT])
+      end
+      # Extract the policy, failing if something bogus was provided
+      policy = SpaceViolationPolicy.valueOf(args[POLICY])
+      # Create a table or namespace quota
+      if args.key?(TABLE)
+        settings = QuotaSettingsFactory.limitTableSpace(TableName.valueOf(args.delete(TABLE)), limit, policy)
+      elsif args.key?(NAMESPACE)
+        settings = QuotaSettingsFactory.limitNamespaceSpace(args.delete(NAMESPACE), limit, policy)
+      else
+        raise(ArgumentError, 'One of TABLE or NAMESPACE must be specified.')
+      end
+      # Apply the quota
+      @admin.setQuota(settings)
+    end
+
+    def remove_space_limit(args)
+      raise(ArgumentError, 'Argument should be a Hash') unless args.kind_of?(Hash)
+      if args.key?(TABLE)
+        table = TableName.valueOf(args.delete(TABLE))
+        settings = QuotaSettingsFactory.removeTableSpaceLimit(table)
+      elsif args.key?(NAMESPACE)
+        settings = QuotaSettingsFactory.removeNamespaceSpaceLimit(args.delete(NAMESPACE))
+      else
+        raise(ArgumentError, 'One of TABLE or NAMESPACE must be specified.')
+      end
+      @admin.setQuota(settings)
+    end
+
+    def get_master_table_sizes()
+      QuotaTableUtil.getMasterReportedTableSizes(@admin.getConnection())
+    end
+
+    def get_rs_quota_snapshots(rs)
+      QuotaTableUtil.getRegionServerQuotaSnapshots(@admin.getConnection(),
+          ServerName.valueOf(rs))
+    end
+
+    def get_rs_quota_violations(rs)
+      QuotaTableUtil.getRegionServerQuotaViolations(@admin.getConnection(),
+          ServerName.valueOf(rs))
     end
 
     def set_global_bypass(bypass, args)

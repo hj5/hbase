@@ -127,6 +127,8 @@ public class HFileWriterV2 extends AbstractHFileWriter {
         cacheIndexesOnWrite ? name : null);
     dataBlockIndexWriter.setMaxChunkSize(
         HFileBlockIndex.getMaxChunkSize(conf));
+    dataBlockIndexWriter.setMinIndexNumEntries(
+        HFileBlockIndex.getMinIndexNumEntries(conf));
     inlineBlockWriters.add(dataBlockIndexWriter);
 
     // Meta data block index writer
@@ -200,7 +202,7 @@ public class HFileWriterV2 extends AbstractHFileWriter {
   private void doCacheOnWrite(long offset) {
     HFileBlock cacheFormatBlock = fsBlockWriter.getBlockForCaching(cacheConf);
     cacheConf.getBlockCache().cacheBlock(
-        new BlockCacheKey(name, offset), cacheFormatBlock);
+        new BlockCacheKey(name, offset, true, cacheFormatBlock.getBlockType()), cacheFormatBlock);
   }
 
   /**

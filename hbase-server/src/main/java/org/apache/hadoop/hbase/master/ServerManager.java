@@ -51,6 +51,8 @@ import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.ClusterConnection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.RetriesExhaustedException;
+import org.apache.hadoop.hbase.ipc.PayloadCarryingRpcController;
+import org.apache.hadoop.hbase.ipc.RpcControllerFactory;
 import org.apache.hadoop.hbase.master.balancer.BaseLoadBalancer;
 import org.apache.hadoop.hbase.master.handler.MetaServerShutdownHandler;
 import org.apache.hadoop.hbase.master.handler.ServerShutdownHandler;
@@ -156,6 +158,7 @@ public class ServerManager {
   private final long warningSkew;
 
   private final RetryCounterFactory pingRetryCounterFactory;
+  private final RpcControllerFactory rpcControllerFactory;
 
   /**
    * Set of region servers which are dead but not processed immediately. If one
@@ -220,6 +223,9 @@ public class ServerManager {
     int pingSleepInterval = Math.max(1, master.getConfiguration().getInt(
       "hbase.master.ping.server.retry.sleep.interval", 100));
     this.pingRetryCounterFactory = new RetryCounterFactory(pingMaxAttempts, pingSleepInterval);
+    this.rpcControllerFactory = this.connection == null
+        ? null
+        : connection.getRpcControllerFactory();
   }
 
   /**
@@ -614,7 +620,8 @@ public class ServerManager {
       return;
     }
 
-    boolean carryingMeta = services.getAssignmentManager().isCarryingMeta(serverName);
+    boolean carryingMeta = services.getAssignmentManager().isCarryingMeta(serverName) ==
+        AssignmentManager.ServerHostRegion.HOSTING_REGION;
     if (carryingMeta) {
       this.services.getExecutorService().submit(new MetaServerShutdownHandler(this.master,
         this.services, this.deadservers, serverName));
@@ -782,6 +789,10 @@ public class ServerManager {
     }
   }
 
+  private PayloadCarryingRpcController newRpcController() {
+    return rpcControllerFactory == null ? null : rpcControllerFactory.newController();
+  }
+
   /**
    * Sends an CLOSE RPC to the specified server to close the specified region.
    * <p>
@@ -806,7 +817,8 @@ public class ServerManager {
         region.getRegionNameAsString() +
         " failed because no RPC connection found to this server");
     }
-    return ProtobufUtil.closeRegion(admin, server, region.getRegionName(),
+    PayloadCarryingRpcController controller = newRpcController();
+    return ProtobufUtil.closeRegion(controller, admin, server, region.getRegionName(),
       versionOfClosingNode, dest, transitionInZK);
   }
 
@@ -828,7 +840,8 @@ public class ServerManager {
     if (server == null) return;
     try {
       AdminService.BlockingInterface admin = getRsAdmin(server);
-      ProtobufUtil.warmupRegion(admin, region);
+      PayloadCarryingRpcController controller = newRpcController();
+      ProtobufUtil.warmupRegion(controller, admin, region);
     } catch (IOException e) {
       LOG.error("Received exception in RPC for warmup server:" +
         server + "region: " + region +
@@ -840,11 +853,12 @@ public class ServerManager {
    * Contacts a region server and waits up to timeout ms
    * to close the region.  This bypasses the active hmaster.
    */
-  public static void closeRegionSilentlyAndWait(ClusterConnection connection, 
+  public static void closeRegionSilentlyAndWait(ClusterConnection connection,
     ServerName server, HRegionInfo region, long timeout) throws IOException, InterruptedException {
     AdminService.BlockingInterface rs = connection.getAdmin(server);
+    PayloadCarryingRpcController controller = connection.getRpcControllerFactory().newController();
     try {
-      ProtobufUtil.closeRegion(rs, server, region.getRegionName(), false);
+      ProtobufUtil.closeRegion(controller, rs, server, region.getRegionName(), false);
     } catch (IOException e) {
       LOG.warn("Exception when closing region: " + region.getRegionNameAsString(), e);
     }
@@ -852,12 +866,13 @@ public class ServerManager {
     while (System.currentTimeMillis() < expiration) {
       try {
         HRegionInfo rsRegion =
-          ProtobufUtil.getRegionInfo(rs, region.getRegionName());
+          ProtobufUtil.getRegionInfo(controller, rs, region.getRegionName());
         if (rsRegion == null) return;
       } catch (IOException ioe) {
         if (ioe instanceof NotServingRegionException) // no need to retry again
           return;
-        LOG.warn("Exception when retrieving regioninfo from: " + region.getRegionNameAsString(), ioe);
+        LOG.warn("Exception when retrieving regioninfo from: "
+          + region.getRegionNameAsString(), ioe);
       }
       Thread.sleep(1000);
     }
@@ -892,7 +907,8 @@ public class ServerManager {
           + region_b.getRegionNameAsString()
           + " failed because no RPC connection found to this server");
     }
-    ProtobufUtil.mergeRegions(admin, region_a, region_b, forcible);
+    PayloadCarryingRpcController controller = newRpcController();
+    ProtobufUtil.mergeRegions(controller, admin, region_a, region_b, forcible);
   }
 
   /**
@@ -901,17 +917,20 @@ public class ServerManager {
   public boolean isServerReachable(ServerName server) {
     if (server == null) throw new NullPointerException("Passed server is null");
 
+    synchronized (this.onlineServers) {
+      if (this.deadservers.isDeadServer(server)) {
+        return false;
+      }
+    }
+
+
     RetryCounter retryCounter = pingRetryCounterFactory.create();
     while (retryCounter.shouldRetry()) {
-      synchronized (this.onlineServers) {
-        if (this.deadservers.isDeadServer(server)) {
-          return false;
-        }
-      }
       try {
+        PayloadCarryingRpcController controller = newRpcController();
         AdminService.BlockingInterface admin = getRsAdmin(server);
         if (admin != null) {
-          ServerInfo info = ProtobufUtil.getServerInfo(admin);
+          ServerInfo info = ProtobufUtil.getServerInfo(controller, admin);
           return info != null && info.hasServerName()
             && server.getStartcode() == info.getServerName().getStartCode();
         }
@@ -1084,6 +1103,14 @@ public class ServerManager {
   }
 
   /**
+   * Check whether a server is online based on hostname and port
+   * @return true if finding a server with matching hostname and port.
+   */
+  public boolean isServerWithSameHostnamePortOnline(final ServerName serverName) {
+    return findServerWithSameHostnamePortWithLock(serverName) != null;
+  }
+
+  /**
    * Check if a server is known to be dead.  A server can be online,
    * or known to be dead, or unknown to this manager (i.e, not online,
    * not known to be dead either. it is simply not tracked by the
@@ -1172,6 +1199,24 @@ public class ServerManager {
   void clearDeadServersWithSameHostNameAndPortOfOnlineServer() {
     for (ServerName serverName : getOnlineServersList()) {
       deadservers.cleanAllPreviousInstances(serverName);
+    }
+  }
+
+  /**
+   * Called by delete table and similar to notify the ServerManager that a region was removed.
+   */
+  public void removeRegion(final HRegionInfo regionInfo) {
+    final byte[] encodedName = regionInfo.getEncodedNameAsBytes();
+    storeFlushedSequenceIdsByRegion.remove(encodedName);
+    flushedSequenceIdByRegion.remove(encodedName);
+  }
+
+  /**
+   * Called by delete table and similar to notify the ServerManager that a region was removed.
+   */
+  public void removeRegions(final List<HRegionInfo> regions) {
+    for (HRegionInfo hri: regions) {
+      removeRegion(hri);
     }
   }
 }

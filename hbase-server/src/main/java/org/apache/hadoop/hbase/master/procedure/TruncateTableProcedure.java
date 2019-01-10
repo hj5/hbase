@@ -65,6 +65,7 @@ public class TruncateTableProcedure
     this.tableName = tableName;
     this.preserveSplits = preserveSplits;
     this.user = env.getRequestUser().getUGI();
+    this.setOwner(this.user.getShortUserName());
   }
 
   @Override
@@ -103,6 +104,8 @@ public class TruncateTableProcedure
           if (!preserveSplits) {
             // if we are not preserving splits, generate a new single region
             regions = Arrays.asList(ModifyRegionUtils.createHRegionInfos(hTableDescriptor, null));
+          } else {
+            regions = recreateRegionInfo(regions);
           }
           setNextState(TruncateTableState.TRUNCATE_TABLE_CREATE_FS_LAYOUT);
           break;
@@ -198,8 +201,7 @@ public class TruncateTableProcedure
     sb.append(getTableName());
     sb.append(" preserveSplits=");
     sb.append(preserveSplits);
-    sb.append(") user=");
-    sb.append(user);
+    sb.append(")");
   }
 
   @Override
@@ -245,6 +247,14 @@ public class TruncateTableProcedure
         regions.add(HRegionInfo.convert(hri));
       }
     }
+  }
+
+  private static List<HRegionInfo> recreateRegionInfo(final List<HRegionInfo> regions) {
+    ArrayList<HRegionInfo> newRegions = new ArrayList<HRegionInfo>(regions.size());
+    for (HRegionInfo hri: regions) {
+      newRegions.add(new HRegionInfo(hri.getTable(), hri.getStartKey(), hri.getEndKey()));
+    }
+    return newRegions;
   }
 
   private boolean prepareTruncate(final MasterProcedureEnv env) throws IOException {

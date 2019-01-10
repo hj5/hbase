@@ -20,21 +20,28 @@ package org.apache.hadoop.hbase.master;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.Future;
 
+import org.apache.hadoop.hbase.backup.BackupType;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
+import org.apache.hadoop.hbase.ProcedureInfo;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.TableDescriptors;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotDisabledException;
 import org.apache.hadoop.hbase.TableNotFoundException;
+import org.apache.hadoop.hbase.TableStateManager;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
+import org.apache.hadoop.hbase.master.snapshot.SnapshotManager;
+import org.apache.hadoop.hbase.procedure.MasterProcedureManagerHost;
 import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
 import org.apache.hadoop.hbase.executor.ExecutorService;
 import org.apache.hadoop.hbase.quotas.MasterQuotaManager;
+import org.apache.hadoop.hbase.util.Pair;
 
 import com.google.protobuf.Service;
 
@@ -43,6 +50,16 @@ import com.google.protobuf.Service;
  */
 @InterfaceAudience.Private
 public interface MasterServices extends Server {
+  /**
+   * @return the underlying snapshot manager
+   */
+  SnapshotManager getSnapshotManager();
+
+  /**
+   * @return the underlying MasterProcedureManagerHost
+   */
+  MasterProcedureManagerHost getMasterProcedureManagerHost();
+
   /**
    * @return Master's instance of the {@link AssignmentManager}
    */
@@ -103,75 +120,142 @@ public interface MasterServices extends Server {
    * Create a table using the given table definition.
    * @param desc The table definition
    * @param splitKeys Starting row keys for the initial table regions.  If null
+   * @param nonceGroup
+   * @param nonce
    *     a single region is created.
    */
-  long createTable(HTableDescriptor desc, byte[][] splitKeys)
-      throws IOException;
+  long createTable(
+      final HTableDescriptor desc,
+      final byte[][] splitKeys,
+      final long nonceGroup,
+      final long nonce) throws IOException;
 
   /**
    * Delete a table
    * @param tableName The table name
+   * @param nonceGroup
+   * @param nonce
    * @throws IOException
    */
-  long deleteTable(final TableName tableName) throws IOException;
+  long deleteTable(
+      final TableName tableName,
+      final long nonceGroup,
+      final long nonce) throws IOException;
 
   /**
    * Truncate a table
    * @param tableName The table name
    * @param preserveSplits True if the splits should be preserved
+   * @param nonceGroup
+   * @param nonce
    * @throws IOException
    */
-  public void truncateTable(final TableName tableName, boolean preserveSplits) throws IOException;
+  public void truncateTable(
+      final TableName tableName,
+      final boolean preserveSplits,
+      final long nonceGroup,
+      final long nonce) throws IOException;
 
   /**
    * Modify the descriptor of an existing table
    * @param tableName The table name
    * @param descriptor The updated table descriptor
+   * @param nonceGroup
+   * @param nonce
    * @throws IOException
    */
-  void modifyTable(final TableName tableName, final HTableDescriptor descriptor)
+  void modifyTable(
+      final TableName tableName,
+      final HTableDescriptor descriptor,
+      final long nonceGroup,
+      final long nonce)
       throws IOException;
+
+  /**
+   * Full backup given list of tables
+   * @param type whether the backup is full or incremental
+   * @param tableList list of tables to backup
+   * @param targetRootDir root dir for saving the backup
+   * @param workers number of paralle workers. -1 - system defined
+   * @param bandwidth bandwidth per worker in MB per sec. -1 - unlimited
+   * @return pair of procedure Id and backupId
+   * @throws IOException
+   */
+  public Pair<Long, String> backupTables(
+      final BackupType type,
+      List<TableName> tableList,
+      final String targetRootDir,
+      final int workers,
+      final long bandwidth) throws IOException;
 
   /**
    * Enable an existing table
    * @param tableName The table name
+   * @param nonceGroup
+   * @param nonce
    * @throws IOException
    */
-  long enableTable(final TableName tableName) throws IOException;
+  long enableTable(
+      final TableName tableName,
+      final long nonceGroup,
+      final long nonce) throws IOException;
 
   /**
    * Disable an existing table
    * @param tableName The table name
+   * @param nonceGroup
+   * @param nonce
    * @throws IOException
    */
-  long disableTable(final TableName tableName) throws IOException;
+  long disableTable(
+      final TableName tableName,
+      final long nonceGroup,
+      final long nonce) throws IOException;
 
 
   /**
    * Add a new column to an existing table
    * @param tableName The table name
    * @param column The column definition
+   * @param nonceGroup
+   * @param nonce
    * @throws IOException
    */
-  void addColumn(final TableName tableName, final HColumnDescriptor column)
+  void addColumn(
+      final TableName tableName,
+      final HColumnDescriptor column,
+      final long nonceGroup,
+      final long nonce)
       throws IOException;
 
   /**
    * Modify the column descriptor of an existing column in an existing table
    * @param tableName The table name
    * @param descriptor The updated column definition
+   * @param nonceGroup
+   * @param nonce
    * @throws IOException
    */
-  void modifyColumn(TableName tableName, HColumnDescriptor descriptor)
+  void modifyColumn(
+      final TableName tableName,
+      final HColumnDescriptor descriptor,
+      final long nonceGroup,
+      final long nonce)
       throws IOException;
 
   /**
    * Delete a column from an existing table
    * @param tableName The table name
    * @param columnName The column name
+   * @param nonceGroup
+   * @param nonce
    * @throws IOException
    */
-  void deleteColumn(final TableName tableName, final byte[] columnName)
+  void deleteColumn(
+      final TableName tableName,
+      final byte[] columnName,
+      final long nonceGroup,
+      final long nonce)
       throws IOException;
 
   /**
@@ -218,6 +302,11 @@ public interface MasterServices extends Server {
   boolean isInitialized();
 
   /**
+   * @return true if master is initialized with namespace ready
+   */
+  boolean isNamespaceManagerInitialized();
+
+  /**
    * Create a new namespace
    * @param descriptor descriptor which describes the new namespace
    * @throws IOException
@@ -237,6 +326,28 @@ public interface MasterServices extends Server {
    * @throws IOException
    */
   public void deleteNamespace(String name) throws IOException;
+
+  /**
+   * @return true if master is in maintanceMode
+   */
+  boolean isInMaintenanceMode();
+
+  /**
+   * Abort a procedure.
+   * @param procId ID of the procedure
+   * @param mayInterruptIfRunning if the proc completed at least one step, should it be aborted?
+   * @return true if aborted, false if procedure already completed or does not exist
+   * @throws IOException
+   */
+  public boolean abortProcedure(final long procId, final boolean mayInterruptIfRunning)
+      throws IOException;
+
+  /**
+   * List procedures
+   * @return procedure list
+   * @throws IOException
+   */
+  public List<ProcedureInfo> listProcedures() throws IOException;
 
   /**
    * Get a namespace descriptor by name
@@ -284,4 +395,11 @@ public interface MasterServices extends Server {
    * @throws IOException
    */
   public long getLastMajorCompactionTimestampForRegion(byte[] regionName) throws IOException;
+
+  /**
+   * @return load balancer
+   */
+  public LoadBalancer getLoadBalancer();
+
+  public TableStateManager getTableStateManager();
 }

@@ -457,7 +457,7 @@ public class Bytes {
     if (off + len > b.length) len = b.length - off;
     for (int i = off; i < off + len ; ++i ) {
       int ch = b[i] & 0xFF;
-      if ( (ch >= '0' && ch <= '9')
+      if ((ch >= '0' && ch <= '9')
           || (ch >= 'A' && ch <= 'Z')
           || (ch >= 'a' && ch <= 'z')
           || " `~!@#$%^&*()-_=+[]{}|;:'\",.<>/?".indexOf(ch) >= 0 ) {
@@ -604,7 +604,7 @@ public class Bytes {
     if (length != SIZEOF_LONG || offset + length > bytes.length) {
       throw explainWrongLengthOrOffset(bytes, offset, length, SIZEOF_LONG);
     }
-    if (UnsafeComparer.isAvailable()) {
+    if (UnsafeComparer.unaligned()) {
       return toLongUnsafe(bytes, offset);
     } else {
       long l = 0;
@@ -645,7 +645,7 @@ public class Bytes {
       throw new IllegalArgumentException("Not enough room to put a long at"
           + " offset " + offset + " in a " + bytes.length + " byte array");
     }
-    if (UnsafeComparer.isAvailable()) {
+    if (UnsafeComparer.unaligned()) {
       return putLongUnsafe(bytes, offset, val);
     } else {
       for(int i = offset + 7; i > offset; i--) {
@@ -800,7 +800,7 @@ public class Bytes {
     if (length != SIZEOF_INT || offset + length > bytes.length) {
       throw explainWrongLengthOrOffset(bytes, offset, length, SIZEOF_INT);
     }
-    if (UnsafeComparer.isAvailable()) {
+    if (UnsafeComparer.unaligned()) {
       return toIntUnsafe(bytes, offset);
     } else {
       int n = 0;
@@ -896,7 +896,7 @@ public class Bytes {
       throw new IllegalArgumentException("Not enough room to put an int at"
           + " offset " + offset + " in a " + bytes.length + " byte array");
     }
-    if (UnsafeComparer.isAvailable()) {
+    if (UnsafeComparer.unaligned()) {
       return putIntUnsafe(bytes, offset, val);
     } else {
       for(int i= offset + 3; i > offset; i--) {
@@ -970,7 +970,7 @@ public class Bytes {
     if (length != SIZEOF_SHORT || offset + length > bytes.length) {
       throw explainWrongLengthOrOffset(bytes, offset, length, SIZEOF_SHORT);
     }
-    if (UnsafeComparer.isAvailable()) {
+    if (UnsafeComparer.unaligned()) {
       return toShortUnsafe(bytes, offset);
     } else {
       short n = 0;
@@ -1008,7 +1008,7 @@ public class Bytes {
       throw new IllegalArgumentException("Not enough room to put a short at"
           + " offset " + offset + " in a " + bytes.length + " byte array");
     }
-    if (UnsafeComparer.isAvailable()) {
+    if (UnsafeComparer.unaligned()) {
       return putShortUnsafe(bytes, offset, val);
     } else {
       bytes[offset+1] = (byte) val;
@@ -1315,28 +1315,19 @@ public class Bytes {
       INSTANCE;
 
       static final Unsafe theUnsafe;
+      private static boolean unaligned = false;
 
       /** The offset to the first element in a byte array. */
       static final int BYTE_ARRAY_BASE_OFFSET;
 
       static {
-        theUnsafe = (Unsafe) AccessController.doPrivileged(
-            new PrivilegedAction<Object>() {
-              @Override
-              public Object run() {
-                try {
-                  Field f = Unsafe.class.getDeclaredField("theUnsafe");
-                  f.setAccessible(true);
-                  return f.get(null);
-                } catch (NoSuchFieldException e) {
-                  // It doesn't matter what we throw;
-                  // it's swallowed in getBestComparer().
-                  throw new Error();
-                } catch (IllegalAccessException e) {
-                  throw new Error();
-                }
-              }
-            });
+        if (UnsafeAccess.unaligned()) {
+          theUnsafe = UnsafeAccess.theUnsafe;
+        } else {
+          // It doesn't matter what we throw;
+          // it's swallowed in getBestComparer().
+          throw new Error();
+        }
 
         BYTE_ARRAY_BASE_OFFSET = theUnsafe.arrayBaseOffset(byte[].class);
 
@@ -1344,6 +1335,7 @@ public class Bytes {
         if (theUnsafe.arrayIndexScale(byte[].class) != 1) {
           throw new AssertionError();
         }
+        unaligned = UnsafeAccess.unaligned();
       }
 
       static final boolean littleEndian =
@@ -1401,6 +1393,14 @@ public class Bytes {
       public static boolean isAvailable()
       {
         return theUnsafe != null;
+      }
+
+      /**
+       * @return true when running JVM is having sun's Unsafe package available in it and underlying
+       *         system having unaligned-access capability.
+       */
+      public static boolean unaligned() {
+        return unaligned;
       }
 
       /**
@@ -2339,14 +2339,47 @@ public class Bytes {
     }
     return result;
   }
-  
+
+  private static final char[] HEX_CHARS = {
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
+  };
+
+  /**
+   * Convert a byte range into a hex string
+   */
+  public static String toHex(byte[] b, int offset, int length) {
+    checkArgument(length <= Integer.MAX_VALUE / 2);
+    int numChars = length * 2;
+    char[] ch = new char[numChars];
+    for (int i = 0; i < numChars; i += 2)
+    {
+      byte d = b[offset + i/2];
+      ch[i] = HEX_CHARS[(d >> 4) & 0x0F];
+      ch[i+1] = HEX_CHARS[d & 0x0F];
+    }
+    return new String(ch);
+  }
+
   /**
    * Convert a byte array into a hex string
-   * @param b
    */
   public static String toHex(byte[] b) {
-    checkArgument(b.length > 0, "length must be greater than 0");
-    return String.format("%x", new BigInteger(1, b));
+    return toHex(b, 0, b.length);
+  }
+
+  private static int hexCharToNibble(char ch) {
+    if (ch <= '9' && ch >= '0') {
+      return ch - '0';
+    } else if (ch >= 'a' && ch <= 'f') {
+      return ch - 'a' + 10;
+    } else if (ch >= 'A' && ch <= 'F') {
+      return ch - 'A' + 10;
+    }
+    throw new IllegalArgumentException("Invalid hex char: " + ch);
+  }
+
+  private static byte hexCharsToByte(char c1, char c2) {
+    return (byte) ((hexCharToNibble(c1) << 4) | hexCharToNibble(c2));
   }
 
   /**
@@ -2355,14 +2388,11 @@ public class Bytes {
    * @param hex
    */
   public static byte[] fromHex(String hex) {
-    checkArgument(hex.length() > 0, "length must be greater than 0");
     checkArgument(hex.length() % 2 == 0, "length must be a multiple of 2");
-    // Make sure letters are upper case
-    hex = hex.toUpperCase();
-    byte[] b = new byte[hex.length() / 2];
-    for (int i = 0; i < b.length; i++) {
-      b[i] = (byte)((toBinaryFromHex((byte)hex.charAt(2 * i)) << 4) +
-        toBinaryFromHex((byte)hex.charAt((2 * i + 1))));
+    int len = hex.length();
+    byte[] b = new byte[len / 2];
+    for (int i = 0; i < len; i += 2) {
+        b[i / 2] = hexCharsToByte(hex.charAt(i),hex.charAt(i+1));
     }
     return b;
   }

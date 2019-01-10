@@ -118,14 +118,15 @@ public class HTable implements HTableInterface, RegionLocator {
   protected ClusterConnection connection;
   private final TableName tableName;
   private volatile Configuration configuration;
-  private TableConfiguration tableConfiguration;
+  private ConnectionConfiguration connConfiguration;
   protected BufferedMutatorImpl mutator;
   private boolean autoFlush = true;
   private boolean closed = false;
   protected int scannerCaching;
   protected long scannerMaxResultSize;
   private ExecutorService pool;  // For Multi & Scan
-  private int operationTimeout;
+  private int operationTimeout; // global timeout for each blocking method with retrying rpc
+  private int rpcTimeout; // timeout for each rpc request
   private final boolean cleanupPoolOnClose; // shutdown the pool in close()
   private final boolean cleanupConnectionOnClose; // close the connection in close()
   private Consistency defaultConsistency = Consistency.STRONG;
@@ -299,7 +300,7 @@ public class HTable implements HTableInterface, RegionLocator {
    */
   @InterfaceAudience.Private
   public HTable(TableName tableName, final ClusterConnection connection,
-      final TableConfiguration tableConfig,
+      final ConnectionConfiguration tableConfig,
       final RpcRetryingCallerFactory rpcCallerFactory,
       final RpcControllerFactory rpcControllerFactory,
       final ExecutorService pool) throws IOException {
@@ -310,7 +311,7 @@ public class HTable implements HTableInterface, RegionLocator {
     this.cleanupConnectionOnClose = false;
     this.connection = connection;
     this.configuration = connection.getConfiguration();
-    this.tableConfiguration = tableConfig;
+    this.connConfiguration = tableConfig;
     this.pool = pool;
     if (pool == null) {
       this.pool = getDefaultExecutor(this.configuration);
@@ -333,7 +334,7 @@ public class HTable implements HTableInterface, RegionLocator {
   protected HTable(ClusterConnection conn, BufferedMutatorParams params) throws IOException {
     connection = conn;
     tableName = params.getTableName();
-    tableConfiguration = new TableConfiguration(connection.getConfiguration());
+    connConfiguration = new ConnectionConfiguration(connection.getConfiguration());
     cleanupPoolOnClose = false;
     cleanupConnectionOnClose = false;
     // used from tests, don't trust the connection is real
@@ -351,14 +352,15 @@ public class HTable implements HTableInterface, RegionLocator {
    * setup this HTable's parameter based on the passed configuration
    */
   private void finishSetup() throws IOException {
-    if (tableConfiguration == null) {
-      tableConfiguration = new TableConfiguration(configuration);
+    if (connConfiguration == null) {
+      connConfiguration = new ConnectionConfiguration(configuration);
     }
-
     this.operationTimeout = tableName.isSystemTable() ?
-        tableConfiguration.getMetaOperationTimeout() : tableConfiguration.getOperationTimeout();
-    this.scannerCaching = tableConfiguration.getScannerCaching();
-    this.scannerMaxResultSize = tableConfiguration.getScannerMaxResultSize();
+        connConfiguration.getMetaOperationTimeout() : connConfiguration.getOperationTimeout();
+    this.rpcTimeout = configuration.getInt(HConstants.HBASE_RPC_TIMEOUT_KEY,
+        HConstants.DEFAULT_HBASE_RPC_TIMEOUT);
+    this.scannerCaching = connConfiguration.getScannerCaching();
+    this.scannerMaxResultSize = connConfiguration.getScannerMaxResultSize();
     if (this.rpcCallerFactory == null) {
       this.rpcCallerFactory = connection.getNewRpcRetryingCallerFactory(configuration);
     }
@@ -571,39 +573,12 @@ public class HTable implements HTableInterface, RegionLocator {
    */
   @Override
   public HTableDescriptor getTableDescriptor() throws IOException {
-    // TODO: This is the same as HBaseAdmin.getTableDescriptor(). Only keep one.
-    if (tableName == null) return null;
-    if (tableName.equals(TableName.META_TABLE_NAME)) {
-      return HTableDescriptor.META_TABLEDESC;
-    }
-    HTableDescriptor htd = executeMasterCallable(
-      new MasterCallable<HTableDescriptor>(getConnection()) {
-      @Override
-      public HTableDescriptor call(int callTimeout) throws ServiceException {
-        GetTableDescriptorsResponse htds;
-        GetTableDescriptorsRequest req =
-            RequestConverter.buildGetTableDescriptorsRequest(tableName);
-        htds = master.getTableDescriptors(null, req);
-
-        if (!htds.getTableSchemaList().isEmpty()) {
-          return HTableDescriptor.convert(htds.getTableSchemaList().get(0));
-        }
-        return null;
-      }
-    });
+    HTableDescriptor htd = HBaseAdmin.getTableDescriptor(tableName, connection,
+        rpcCallerFactory, rpcControllerFactory, operationTimeout, rpcTimeout);
     if (htd != null) {
       return new UnmodifyableHTableDescriptor(htd);
     }
-    throw new TableNotFoundException(tableName.getNameAsString());
-  }
-
-  private <V> V executeMasterCallable(MasterCallable<V> callable) throws IOException {
-    RpcRetryingCaller<V> caller = rpcCallerFactory.newCaller();
-    try {
-      return caller.callWithRetries(callable, operationTimeout);
-    } finally {
-      callable.close();
-    }
+    return null;
   }
 
   /**
@@ -781,7 +756,8 @@ public class HTable implements HTableInterface, RegionLocator {
          }
        }
      };
-     return rpcCallerFactory.<Result>newCaller().callWithRetries(callable, this.operationTimeout);
+     return rpcCallerFactory.<Result>newCaller(rpcTimeout).callWithRetries(callable,
+         this.operationTimeout);
    }
 
   /**
@@ -805,22 +781,22 @@ public class HTable implements HTableInterface, RegionLocator {
       if (scan.isSmall()) {
         return new ClientSmallReversedScanner(getConfiguration(), scan, getName(),
             this.connection, this.rpcCallerFactory, this.rpcControllerFactory,
-            pool, tableConfiguration.getReplicaCallTimeoutMicroSecondScan());
+            pool, connConfiguration.getReplicaCallTimeoutMicroSecondScan());
       } else {
         return new ReversedClientScanner(getConfiguration(), scan, getName(),
             this.connection, this.rpcCallerFactory, this.rpcControllerFactory,
-            pool, tableConfiguration.getReplicaCallTimeoutMicroSecondScan());
+            pool, connConfiguration.getReplicaCallTimeoutMicroSecondScan());
       }
     }
 
     if (scan.isSmall()) {
       return new ClientSmallScanner(getConfiguration(), scan, getName(),
           this.connection, this.rpcCallerFactory, this.rpcControllerFactory,
-          pool, tableConfiguration.getReplicaCallTimeoutMicroSecondScan());
+          pool, connConfiguration.getReplicaCallTimeoutMicroSecondScan());
     } else {
       return new ClientScanner(getConfiguration(), scan, getName(), this.connection,
           this.rpcCallerFactory, this.rpcControllerFactory,
-          pool, tableConfiguration.getReplicaCallTimeoutMicroSecondScan());
+          pool, connConfiguration.getReplicaCallTimeoutMicroSecondScan());
     }
   }
 
@@ -886,16 +862,17 @@ public class HTable implements HTableInterface, RegionLocator {
           }
         }
       };
-      return rpcCallerFactory.<Result>newCaller().callWithRetries(callable, this.operationTimeout);
+      return rpcCallerFactory.<Result>newCaller(rpcTimeout).callWithRetries(callable,
+          this.operationTimeout);
     }
 
     // Call that takes into account the replica
     RpcRetryingCallerWithReadReplicas callable = new RpcRetryingCallerWithReadReplicas(
       rpcControllerFactory, tableName, this.connection, get, pool,
-      tableConfiguration.getRetriesNumber(),
+      connConfiguration.getRetriesNumber(),
       operationTimeout,
-      tableConfiguration.getPrimaryCallTimeoutMicroSecond());
-    return callable.call();
+      connConfiguration.getPrimaryCallTimeoutMicroSecond());
+    return callable.call(operationTimeout);
   }
 
 
@@ -1002,7 +979,8 @@ public class HTable implements HTableInterface, RegionLocator {
         }
       }
     };
-    rpcCallerFactory.<Boolean> newCaller().callWithRetries(callable, this.operationTimeout);
+    rpcCallerFactory.<Boolean> newCaller(rpcTimeout).callWithRetries(callable,
+        this.operationTimeout);
   }
 
   /**
@@ -1119,7 +1097,8 @@ public class HTable implements HTableInterface, RegionLocator {
           }
         }
       };
-    return rpcCallerFactory.<Result> newCaller().callWithRetries(callable, this.operationTimeout);
+    return rpcCallerFactory.<Result> newCaller(rpcTimeout).callWithRetries(callable,
+        this.operationTimeout);
   }
 
   /**
@@ -1150,7 +1129,8 @@ public class HTable implements HTableInterface, RegionLocator {
         }
       }
     };
-    return rpcCallerFactory.<Result> newCaller().callWithRetries(callable, this.operationTimeout);
+    return rpcCallerFactory.<Result> newCaller(rpcTimeout).callWithRetries(callable,
+        this.operationTimeout);
   }
 
   /**
@@ -1220,7 +1200,8 @@ public class HTable implements HTableInterface, RegionLocator {
           }
         }
       };
-    return rpcCallerFactory.<Long> newCaller().callWithRetries(callable, this.operationTimeout);
+    return rpcCallerFactory.<Long> newCaller(rpcTimeout).callWithRetries(callable,
+        this.operationTimeout);
   }
 
   /**
@@ -1249,7 +1230,8 @@ public class HTable implements HTableInterface, RegionLocator {
           }
         }
       };
-    return rpcCallerFactory.<Boolean> newCaller().callWithRetries(callable, this.operationTimeout);
+    return rpcCallerFactory.<Boolean> newCaller(rpcTimeout).callWithRetries(callable,
+        this.operationTimeout);
   }
 
   /**
@@ -1279,7 +1261,8 @@ public class HTable implements HTableInterface, RegionLocator {
           }
         }
       };
-    return rpcCallerFactory.<Boolean> newCaller().callWithRetries(callable, this.operationTimeout);
+    return rpcCallerFactory.<Boolean> newCaller(rpcTimeout).callWithRetries(callable,
+        this.operationTimeout);
   }
 
   /**
@@ -1308,7 +1291,8 @@ public class HTable implements HTableInterface, RegionLocator {
           }
         }
       };
-    return rpcCallerFactory.<Boolean> newCaller().callWithRetries(callable, this.operationTimeout);
+    return rpcCallerFactory.<Boolean> newCaller(rpcTimeout).callWithRetries(callable,
+        this.operationTimeout);
   }
 
   /**
@@ -1338,7 +1322,8 @@ public class HTable implements HTableInterface, RegionLocator {
           }
         }
       };
-    return rpcCallerFactory.<Boolean> newCaller().callWithRetries(callable, this.operationTimeout);
+    return rpcCallerFactory.<Boolean> newCaller(rpcTimeout).callWithRetries(callable,
+        this.operationTimeout);
   }
 
   /**
@@ -1506,7 +1491,7 @@ public class HTable implements HTableInterface, RegionLocator {
 
   // validate for well-formedness
   public void validatePut(final Put put) throws IllegalArgumentException {
-    validatePut(put, tableConfiguration.getMaxKeyValueSize());
+    validatePut(put, connConfiguration.getMaxKeyValueSize());
   }
 
   // validate for well-formedness
@@ -1568,7 +1553,7 @@ public class HTable implements HTableInterface, RegionLocator {
   @Override
   public long getWriteBufferSize() {
     if (mutator == null) {
-      return tableConfiguration.getWriteBufferSize();
+      return connConfiguration.getWriteBufferSize();
     } else {
       return mutator.getWriteBufferSize();
     }
@@ -1792,6 +1777,14 @@ public class HTable implements HTableInterface, RegionLocator {
     return operationTimeout;
   }
 
+  public void setRpcTimeout(int rpcTimeout) {
+    this.rpcTimeout = rpcTimeout;
+  }
+
+  public int getRpcTimeout() {
+    return rpcTimeout;
+  }
+
   @Override
   public String toString() {
     return tableName + ";" + connection;
@@ -1916,8 +1909,8 @@ public class HTable implements HTableInterface, RegionLocator {
       this.mutator = (BufferedMutatorImpl) connection.getBufferedMutator(
           new BufferedMutatorParams(tableName)
               .pool(pool)
-              .writeBufferSize(tableConfiguration.getWriteBufferSize())
-              .maxKeyValueSize(tableConfiguration.getMaxKeyValueSize())
+              .writeBufferSize(connConfiguration.getWriteBufferSize())
+              .maxKeyValueSize(connConfiguration.getMaxKeyValueSize())
       );
     }
     return mutator;

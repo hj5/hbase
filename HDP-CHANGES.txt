@@ -1,0 +1,316 @@
+HDP-2.6 is based on Apache HBase 1.1.2
+
+
+Following are the changes on top of Apache HBase 1.1.2
+HBASE-17151 New API to create HFile.Reader without instantiating block cache
+HBASE-16284 Unauthorized client can shutdown the cluster
+HBASE-16604 Scanner retries on IOException can cause the scans to miss data
+HBASE-16824 Writer.flush() can be called on already closed streams in WAL roll
+HBASE-16675 Average region size may be incorrect
+HBASE-16678 MapReduce jobs do not update counters from ScanMetrics
+HBASE-16721 Concurrency issue in WAL unflushed seqId tracking
+HBASE-16750 Updating asciidoctor plugin version
+HBASE-15925 compat-module maven variable not evaluated (Sean Busbey)
+HBASE-16056 Procedure v2 - fix master crash for FileNotFound (Matteo Bertozzi)
+HBASE-16016 Fix overflow deadline value in AssignmentManager#waitForAssignment (Stephen Yuan Jiang)
+HBASE-14598 ByteBufferOutputStream grows its HeapByteBuffer beyond JVM limitations (Ian Friedman)
+HBASE-15100 Master WALProcs still never clean up (Matteo Bertozzi)
+HBASE-15125 HBaseFsck's adoptHdfsOrphan function creates region with wrong end key boundary (chenrongwei)
+HBASE-15850 Localize the configuration change in testCheckTableLocks to reduce flakiness of TestHBaseFsck test suite (Stephen Yuan Jiang)
+HBASE-13318 RpcServer.getListenerAddress should handle when the accept channel is closed (Andrew Purtell)
+HBASE-14535 Integration test for rpc connection concurrency / deadlock testing (Enis Soztutar)
+HBASE-15636 hard coded wait time out value in HBaseTestingUtility#waitUntilAllRegionsAssigned might cause test failure (Stephen Yuan Jiang)
+HBASE-14407 NotServingRegion: hbase region closed forever (Shuaifeng Zhou)
+HBASE-14307 Incorrect use of positional read api in HFileBlock (Chris Nauroth)
+HBASE-14963 Remove Guava dependency from HBase client code (ddas)
+HBASE-14947 WALProcedureStore improvements (Matteo Bertozzi)
+HBASE-14843 TestWALProcedureStore.testLoad is flakey (Matteo Bertozz)
+HBASE-14712 Increase MasterProcWALs clean up granularity (Matteo Bertozzi)
+HBASE-14449 Rewrite deadlock prevention for concurrent connection close
+HBASE-14258 Make region_mover.rb script case insensitive with regard to hostname
+HBASE-14269 FuzzyRowFilter omits certain rows when multiple fuzzy key exist
+HBASE-14313 After a Connection sees ConnectionClosingException it never recovers (Elliott Clark)
+HBASE-14302 TableSnapshotInputFormat should not create back references when restoring snapshot
+BUG-45027/BUG-45361 Fix hostname used with Kerberos on Dual-Homed clusters.
+HBASE-14536 Balancer & SSH interfering with each other leading to unavailability
+HBASE-14680 Two configs for snapshot timeout and better defaults
+HBASE-14283 Reverse scan doesn’t work with HFile inline index/bloom blocks
+HBASE-15221 Reload the cache on re-tried puts in HTableMultiplexer and adds a close() method to HTableMultiplexer
+HBASE-15232 Handle region location cache mgmt in AsyncProcess for multi()'s
+HBASE-15518 Add per-table metrics
+HBASE-15519 Add per-user metrics
+HBASE-14850 C++ client implementation (TECH PREVIEW. DO NOT DEPLOY IN PROD)
+HBASE-5291 Add Kerberos HTTP SPNEGO authentication support to HBase web consoles
+HBASE-15752 ClassNotFoundException is encountered when custom WAL codec is not found in WALPlayer job
+HBASE-14667 HBaseFsck constructors have diverged (Matteo)
+HBASE-15292 Refined ZooKeeperWatcher to prevent ZooKeeper's callback while construction (Hiroshi Ikeda)
+HBASE-15767 upgrade httpclient to 4.3.6
+HBASE-15817 Backup history should mention the type (full or incremental) of the backup
+HBASE-15808 Reduce potential bulk load intermediate space usage and waste (Jerry He)
+HBASE-15842 SnapshotInfo should display ownership information
+HBASE-15858 Some region server group shell commands don't work
+HBASE-15880 RpcClientImpl#tracedWriteRequest incorrectly closes HTrace span (Mikhail)
+HBASE-14906 Improvements on FlushLargeStoresPolicy (Yu Li)
+HBASE-15873 ACL for snapshot restore / clone is not enforced
+HBASE-14655 Narrow the scope of doAs() calls to region observer notifications for compaction
+HBASE-15884 NPE in StoreFileScanner#skipKVsNewerThanReadpoint during reverse scan (Sergey Soldatov)
+HBASE-15904 Use comma as separator for list of tables in BackupInfo
+HBASE-14123 HBase Backup/Restore Phase 2
+HBASE-14140 HBase Backup Admin API
+HBASE-15861 Add support for table sets in restore operation 
+HBASE-15928 hbase backup delete command does not remove backup root dir from hdfs
+HBASE-15931 Add log for long-running tasks in AsyncProcess (Yu Li)
+HBASE-15933 NullPointerException may be thrown from SimpleRegionNormalizer#getRegionSize()
+HBASE-15019 Replication stuck when HDFS is restarted (Matteo)
+HBASE-15972 hbase backup set command should not accept non-existing table
+HBASE-15899 HBase incremental restore should handle namespaces properly
+HBASE-15953 HBase backup set list command does not list any existing sets
+HBASE-16007 Job's Configuration should be passed to TableMapReduceUtil#addDependencyJars() in WALPlayer
+HBASE-16006 FileSystem should be obtained from specified path in WALInputFormat#getSplits()
+HBASE-15142 Procedure v2 - Basic WebUI listing the procedures (Matteo)
+HBASE-15144 Procedure v2 - Web UI displaying Store state
+HBASE-15862 Backup - Delete- Restore does not restore deleted data
+HBASE-15971 Regression: Random Read/WorkloadC slower in 1.x than 0.98 (Stack)
+HBASE-16045 endtime argument for VerifyReplication was incorrectly specified in usage
+HBASE-16048 Tag InternalScanner with LimitedPrivate(HBaseInterfaceAudience.COPROC)
+HBASE-14805 status should show the master in shell (Enis)
+HBASE-16059 Region normalizer fails to trigger merge action where one of the regions is empty
+HBASE-16064 delete backup command shows HDFS permission error when deleting the intended backup
+HBASE-15465 userPermission returned by getUserPermission() for the selected namespace does not have namespace set (li xiang)
+HBASE-14818 user_permission does not list namespace permissions (li xiang)
+HBASE-16062 Improper error handling in WAL Reader/Writer creation (Vladimir Rodionov)
+HBASE-16012 Major compaction can't work due to obsolete scanner read point in RegionServer (Guanghao Zhang)
+HBASE-16088 hbase restore gives a misleading message if the table doesn't exist
+HBASE-14172 Upgrade existing thrift binding using thrift 0.9.3 compiler (Josh Elser)
+HBASE-16037 Backup/Restore: Make automatic mode default one (Vladimir Rodionov)
+HBASE-16065 hbase backup set describe command does not inform if the set does not exist (Vladimir Rodionov)
+HBASE-16052 Improve HBaseFsck Scalability (Ben Lau)
+HBASE-16132 Scan does not return all the result when regionserver is busy (binlijin)
+HBASE-15377 Per-RS Get metric is time based, per-region metric is size-based (Heng Chen)
+HBASE-16288 HFile intermediate block level indexes might recurse forever creating multi TB files
+HBASE-16314 Retry on table snapshot failure
+HBASE-16358 Backup create command: log success/failure with backup id
+HBASE-13829 Add more ThrottleType (Guanghao Zhang)
+HBASE-15378 Scanner cannot handle heartbeat message with no results (Phil Yang)
+HBASE-16319 Fix TestCacheOnWrite after HBASE-16288 (Andrew Purtell)
+HBASE-16267 Remove commons-httpclient dependency from hbase-rest module
+HBASE-16359 NullPointerException in RSRpcServices.openRegion()
+HBASE-16315 RegionSizeCalculator prints region names as binary without escapes
+HBASE-16350 Undo server abort from HBASE-14968
+HBASE-16367 Race between master and region server initialization may lead to premature server abort
+HBASE-16377 ServerName check is ineffective in region_mover.rb
+HBASE-15146 Don't block on Reader threads
+HBASE-15306 Make RPC call queue length dynamically configurable
+HBASE-15136 Explore different queuing behaviors while busy
+HBASE-16023 Fastpath for the FIFO rpcscheduler
+HBASE-16931 Setting cell's seqId to zero in compaction flow might cause RS down
+HBASE-16237 Blocks for hbase:meta table are not cached in L1 cache
+HBASE-16985 TestClusterId failed due to wrong hbase rootdir
+HBASE-14635 Fix flaky test TestSnapshotCloneIndependence
+HBASE-16429 FSHLog: deadlock if rollWriter called when ring buffer filled with appends
+HBASE-17292 Add observer notification before bulk loaded hfile is moved to region directory
+HBASE-14148 Web UI Framable Page
+
+Following are the changes on top of Apache HBase 1.1.1
+
+HBASE-14468 Compaction improvements: FIFO compaction policy (Vladimir Rodionov)
+HBASE-14987 Compaction marker whose region name doesn't match current region's needs to be handled
+HBASE-14471 Thrift -  HTTP Error 413 full HEAD if using kerberos authentication
+HBASE-15035 bulkloading hfiles with tags that require splits do not preserve tags (Jonathan Hsieh)
+HBASE-14761 Deletes with and without visibility expression do not delete the matching mutation (Ram)
+HBASE-14575 Relax region read lock for compactions
+HBASE-15022 replication_admin.rb throws undefined method 'getZooKeeperClusterKey' for ZKUtil (Matteo)
+HBASE-14866 VerifyReplication should use peer configuration in peer connection (Gary Helmling)
+HBASE-14928 Start row should be set for query through HBase REST gateway involving globbing option
+HBASE-15014 Fix filterCellByStore in WALsplitter is awful for performance (Elliott Clark)
+HBASE-14432 Procedure V2 - enforce ACL on procedure admin tasks (Stephen Yuan Jiang)
+HBASE-14488 Procedure V2 - shell command to abort a procedure (Stephen Yuan Jiang)
+HBASE-14487 Procedure V2 - shell command to list all procedures (Stephen Yuan Jiang)
+HBASE-14107 Procedure V2 - Administrative Task: Provide an API to List all procedures (Stephen Yuan Jiang)
+HBASE-14108 Procedure V2 - Administrative Task: provide an API to abort a procedure (Stephen Yuan Jiang)
+HBASE-14445 ExportSnapshot does not honor -chmod option
+HBASE-13250 chown of ExportSnapshot does not cover all path and files (He Liangliang)
+HBASE-14280 Bulk Upload from HA cluster to remote HA hbase cluster fails (Ankit Singhal)
+HBASE-14497 Reverse Scan threw StackOverflow caused by readPt checking (Yerui Sun)
+HBASE-14309 Allow load balancer to operate when there is region in transition by adding force flag
+HBASE-14359 HTable#close will hang forever if unchecked error/exception thrown in AsyncProcess#sendMultiAction
+HBASE-14342 Recursive call in RegionMergeTransactionImpl.getJournal()
+HBASE-14314 Metrics for block cache should take region replicas into account
+HBASE-13103 [ergonomics] add region size balancing as a feature of master (Mikhail Antonov)
+HBASE-14367 Add normalization support to shell (Mikhail Antonov)
+HBASE-14578 URISyntaxException during snapshot restore for table with user defined namespace
+HBASE-14581 Znode cleanup throws auth exception in secure mode
+HBASE-14565 Make ZK connection timeout configurable in MiniZooKeeperCluster
+HBASE-14591 Region with reference hfile may split after a forced split in IncreasingToUpperBoundRegionSplitPolicy (Shaohui Liu)
+HBASE-14361 ReplicationSink should create Connection instances lazily
+HBASE-14621 ReplicationLogCleaner stuck on RS crash (Ashu)
+HBASE-14624 BucketCache.freeBlock is too expensive
+HBASE-14475 Region split requests are always audited with hbase user rather than request user
+HBASE-14605 Split fails due to 'No valid credentials' error when SecureBulkLoadEndpoint#start tries to access hdfs
+HBASE-14759 Avoid using Math.abs when selecting SyncRunner in FSHLog
+HBASE-14268 Improve KeyLocker (Hiroshi Ikeda)
+HBASE-14706 RegionLocationFinder should return multiple servernames by top host (Guanghao Zhang)
+HBASE-14463 Severe performance downgrade when parallel reading a single key from BucketCache (Yu Li)
+HBASE-14631 Region merge request should be audited with request user through proper scope of doAs() calls to region observer notifications
+HBASE-14809 Grant / revoke Namespace admin permission to group
+HBASE-14788 Splitting a region does not support the hbase.rs.evictblocksonclose config when closing source region
+HBASE-14207 Region was hijacked and remained in transition when RS failed to open a region and later regionplan changed to new RS on retry (Pankaj Kumar)
+HBASE-14885 NullPointerException in HMaster#normalizeRegions() due to missing TableDescriptor
+HBASE-14893 Race between mutation on region and region closing operation leads to NotServingRegionException
+HBASE-14799 Commons-collections object deserialization remote command execution vulnerability (Andrew Purtell)
+HBASE-14632 Region server aborts due to unguarded dereference of Reader
+
+HBASE-11658 Piped commands to hbase shell should return non-zero if shell command failed
+HBASE-11940 Add utility scripts for snapshotting / restoring all tables in cluster
+BUG-35784 Update httpcore version to 4.2.5
+BUG-28682 HBase - Address Security Issues in Jetty 6.1.26
+BUG-22418 Update jackson version to 1.9.13 
+BUG-29025 Windows incompatibility with unicode (Chinese characters)
+HBASE-15220 Change two logs in SimpleRegionNormalizer to INFO level
+HBASE-13153 Bulk Loaded HFile Replication (Ashish Singhi)
+HBASE-15425 Failing to write bulk load event marker in the WAL is ignored (Ashish Singhi)
+HBASE-14493 Upgrade the jamon-runtime dependency (Andrew Purtell)
+HBASE-14110 Add CostFunction for balancing primary region replicas
+HBASE-15439 getMaximumAllowedTimeBetweenRuns in ScheduledChore ignores the TimeUnit (Jingcheng)
+HBASE-15039 HMaster and RegionServers should try to refresh token keys from zk when facing InvalidToken (Yong Zhang)
+HBASE-15234 Don't abort ReplicationLogCleaner on ZooKeeper errors (Gary)
+HBASE-15181 A simple implementation of date based tiered compaction (Clara)
+HBASE-15389 Write out multiple files when compaction (Duo Zhang)
+HBASE-15085 IllegalStateException was thrown when scanning on bulkloaded HFiles
+HBASE-14812 Fix ResultBoundedCompletionService deadlock (Elliott Clark)
+HBASE-15252 Data loss when replaying WAL if HDFS timeout (Matteo)
+HBASE-15400 Use DateTieredCompactor for Date Tiered Compaction (Clara Xiong)
+HBASE-15187 Integrate CSRF prevention filter to REST gateway
+HBASE-14347 Add a switch to DynamicClassLoader to disable it (huaxiang sun)
+HBASE-15578 Handle HBASE-15234 for ReplicationHFileCleaner (Ashish)
+HBASE-15218 On RS crash and replay of WAL, loosing all Tags in Cells (Anoop)
+HBASE-15213 Fix increment performance regression caused by HBASE-8763 on branch-1.0 (Junegunn Choi)
+HBASE-14380 Correct data gets skipped along with bad data in importTsv bulk load thru TsvImporterTextMapper (Bhupendra Kumar Jain)
+HBASE-14229 Flushing canceled by coprocessor still leads to memstoreSize set down (Yerui Sun)
+HBASE-14867 SimpleRegionNormalizer needs to have better heuristics to trigger merge operation
+HBASE-11339 HBase MOB (Jingcheng Du)
+HBASE-15527 Refactor Compactor related classes (Duo Zhang)
+HBASE-14030 HBase Backup/Restore Phase 1 with Proc V2
+HBASE-15592 Print Procedure WAL content (Jerry He)
+HBASE-14674 Rpc handler / task monitoring seems to be broken after 0.98 (Heng Chen)
+HBASE-14941 locate_region shell command (Matteo)
+HBASE-15621 Suppress Hbase SnapshotHFile cleaner error messages when a snaphot is going on (Huaxiang)
+HBASE-15622 Superusers does not consider the keytab credentials (Matteo)
+HBASE-15325 ResultScanner allowing partial result will miss the rest of the row if the region is moved between two rpc requests (Phil)
+HBASE-15665 Support using different StoreFileComparators for different CompactionPolicies (Duo Zhang)
+HBASE-15430 Failed taking snapshot - Manifest proto-message too large (JunHo Cho)
+HBASE-15679 Assertion on wrong variable in TestReplicationThrottler#testThrottling
+HBASE-15669 HFile size is not considered correctly in a replication request (Ashish)
+HBASE-14252 RegionServers fail to start when setting hbase.ipc.server.callqueue.scan.ratio to 0
+HBASE-15674 HRegionLocator#getAllRegionLocations should put the results in cache (Heng Chen)
+HBASE-15719 TestMasterCoprocessorExceptionWithAbort#testExceptionFromCoprocessorWhenCreatingTable fails due to premature master abortion
+HBASE-15707 ImportTSV bulk output does not support tags with hfile.format.version=3 (huaxiang sun)
+HBASE-15676 FuzzyRowFilter fails and matches all the rows in the table if the mask consists of all 0s (Matt Warhaftig)
+HBASE-13590 TestEnableTableHandler.testEnableTableWithNoRegionServers is flakey
+HBASE-14968 ConcurrentModificationException in region close resulting in the region staying in closing state
+HBASE-17409 Limit jsonp callback name to prevent xss
+HBASE-17424 Disable external entity parsing in RemoteAdmin
+HBASE-16270 Handle duplicate clearing of snapshot in region replicas (Robert Yokota)
+HBASE-15984 Handle premature EOF treatment of WALs in replication.
+
+HBASE-13393 - Optimize memstore flushing to avoid writing tag information to hfiles when no tags are present. (Ram)
+HBASE-13415 Procedure V2 - Use nonces for double submits from client (Stephen Yuan Jiang)
+HBASE-14417 Incremental backup and bulk loading
+HBASE-14694 Scan copy constructor doesn't handle allowPartialResults
+HBASE-14708 Use copy on write Map for region location cache
+HBASE-15703 Deadline scheduler needs to return to the client info about skipped calls, not just drop them
+HBASE-16008 A robust way deal with early termination of HBCK (Stephen Yuan Jiang)
+HBASE-16089 Add on FastPath for CoDel
+HBASE-16093 Fix splits failed before creating daughter regions leave meta inconsistent
+HBASE-16146 Remove thread local usage in Counter
+HBASE-16189 [Rolling Upgrade] 2.0 hfiles cannot be opened by 1.x servers (Ram)
+HBASE-16238 It's useless to catch SESSIONEXPIRED exception and retry in RecoverableZooKeeper (Allan Yang)
+HBASE-16430 Fix RegionServer Group's bug when moving multiple tables
+HBASE-16509 Add option to LoadIncrementalHFiles which allows skipping unmatched column families
+HBASE-16578 Mob data loss after mob compaction and normal compaction
+HBASE-16616 Rpc handlers stuck on ThreadLocalMap.expungeStaleEntry
+HBASE-16621 HBCK should have -fixHFileLinks (Janos Gub)
+HBASE-16630 Fragmentation in long running Bucket Cache
+HBASE-16646 Enhance LoadIncrementalHFiles API to accept store file paths as input
+HBASE-16649 Truncate table with splits preserved can cause both data loss and truncated data appeared again
+HBASE-16660 ArrayIndexOutOfBounds during the majorCompactionCheck in DateTieredCompaction
+HBASE-16672 Add option for bulk load to copy hfile(s) instead of renaming
+HBASE-16699 Overflows in AverageIntervalRateLimiter's refill() and getWaitInterval()
+HBASE-16732 Avoid possible NPE in MetaTableLocator
+HBASE-16773 AccessController should access local region if possible
+HBASE-16821 Enhance LoadIncrementalHFiles API to convey missing hfiles if any
+HBASE-16889 Proc-V2: verifyTables in the IntegrationTestDDLMasterFailover test after each table DDL is incorrect (Stephen Yuan Jiang)
+HBASE-16960 RegionServer hangs when aborting
+HBASE-16960 RegionServer hangs when aborting
+HBASE-16995 Build client Java API and client protobuf messages (Josh Elser)
+HBASE-16996 Implement storage/retrieval of filesystem-use quotas into quota table (Josh Elser)
+HBASE-16998 Implement Master-side analysis of region space reports
+HBASE-16999 Implement master and regionserver synchronization of quota state
+HBASE-17000 Implement computation of online region sizes and report to the Master
+HBASE-17001 Enforce quota violation policies in the RegionServer
+HBASE-17020 keylen in midkey() dont computed correctly
+HBASE-17022 TestMasterFailoverWithProcedures#testTruncateWithFailover fails constantly in branch-1.1
+HBASE-17023 Region left unassigned due to AM and SSH each thinking others would do the assignment work (Stephen Yuan Jiang)
+HBASE-17025 Add shell commands for space quotas
+HBASE-17032 CallQueueTooBigException and CallDroppedException should not be triggering PFFE
+HBASE-17037 Enhance LoadIncrementalHFiles API to convey loaded files
+HBASE-17044 Fix merge failed before creating merged region leaves meta inconsistent
+HBASE-17091 IntegrationTestZKAndFSPermissions failed with 'KeeperException'
+HBASE-17092 Both LoadIncrementalHFiles#doBulkLoad() methods should set return value
+HBASE-17118 StoreScanner leaked in KeyValueHeap (binlijin)
+HBASE-17123 Add postBulkLoadHFile variant that notifies the final paths for the hfiles
+HBASE-17149 Procedure V2 - Fix nonce submission to avoid unnecessary calling coprocessor multiple times (Matteo Bertozzi)
+HBASE-17187 DoNotRetryExceptions from coprocessors should bubble up to the application
+HBASE-17238 Wrong in-memory hbase:meta location causing SSH failure (Stephen Yuan jiang)
+HBASE-17259 API to remove space quotas on a table/namespace
+HBASE-17264 Processing RIT with offline state will always fail to open the first time (Allan Yang)
+HBASE-17265 Region left unassigned in master failover when region failed to open (Allan Yang)
+HBASE-17275 Assign timeout may cause region to be unassigned forever (Allan yang)
+HBASE-17276 Only log stacktraces for exceptions once for updates in a batch
+HBASE-17427 region_mover.rb may move region onto the same server
+HBASE-17428 Implement informational RPCs for space quotas
+HBASE-17435 Call to preCommitStoreFile() hook encounters SaslException in secure deployment
+HBASE-17437 Support specifying a WAL directory outside of the root directory
+HBASE-17460 enable_table_replication can not perform cyclic replication of a table (Janos Gub)
+HBASE-17516 Correctly handle case where table and NS quotas both apply
+HBASE-17525 Quota support for SecureBulkLoadEndpoint
+HBASE-17568 Addendum: Better handle stale/missing region size reports
+HBASE-17568 Better handle stale/missing region size reports
+HBASE-17597 TestMetaWithReplicas.testMetaTableReplicaAssignment is flaky
+HBASE-17648: HBase Table-level synchronization fails between two secured(kerberized) cluster
+HBASE-17682 Region stuck in merging_new state indefinitely
+HBASE-17710 HBase in standalone mode creates directories with 777 permission
+HBASE-17717 Explicitly use "sasl" ACL scheme for hbase superuser
+HBASE-17937 Memstore size becomes negative in case of expensive postPut/Delete Coprocessor call
+HBASE-17287 Master becomes a zombie if filesystem object closes
+HBASE-17785 RSGroupBasedLoadBalancer fails to assign new table regions when cloning snapshot (Andrew)
+HBASE-17779 disable_table_replication returns misleading message and does not turn off replication (Janos Gub)
+HBASE-17501 guard against NPE while reading FileTrailer and HFileBlock
+HBASE-17861 Regionserver down when checking the permission of staging dir if hbase.rootdir is on S3
+HBASE-18036 Data locality is not maintained after cluster restart or SSH (Stephen Yuan Jiang)
+HBASE-18067 Allow default FORMATTER for shell put/get commands
+HBASE-18075 Support non-latin table names and namespaces
+HBASE-18005 read replica: handle the case that region server hosting both primary replica and meta region is down
+
+HBASE-17922 Clean TestRegionServerHostname for hadoop3.
+HBASE-16488 Starting namespace and quota services in master startup asynchronizely (Stephen Yuan Jiang)
+HBASE-15645 hbase.rpc.timeout is not used in operations of HTable
+HBASE-16420 Fix source incompatibility of Table interface (Phil Yang)
+HBASE-13706 CoprocessorClassLoader should not exempt Hive classes
+HBASE-17547 TableCatelog doesn't support multiple columns from Single Column family
+HBASE-14734 Prevent BindException when setting up MiniKdc. Port for kdc service gets selected in the constructor, but we bind to it later in MiniKdc.start()-->MiniKdc.initKDCServer() --> KdcServer.start(). In meantime, some other service can capture the port which results in BindException. The solution here is to catch the exception and retry.
+HBASE-15177 Reduce garbage created under high load
+HBASE-14492 Increase REST server header buffer size from 8k to 64k (Huaxiang Sun)
+BUG-83262 Add hbase-native-client/third-party/BUCK
+BUG-83262 Backport c++ native client to HDP-2.6
+HBASE-18358 Backport HBASE-18099 'FlushSnapshotSubprocedure should wait for concurrent Region#flush() to finish'
+HBASE-16345 RpcRetryingCallerWithReadReplicas#call() should catch some RegionServer Exceptions
+HBASE-16841 Data loss in MOB files after cloning a snapshot and deleting that snapshot
+HBASE-18312 Ineffective handling of FileNotFoundException in FileLink.tryOpen()
+HBASE-16767 Mob compaction needs to clean up files - addendum removes createMobRefKeyValue()
+HBASE-16812 Clean up the locks in MOB
+HBASE-17095 The ClientSimpleScanner keeps retrying if the hfile is corrupt or cannot found
+HBASE-17241 Avoid compacting already compacted mob files with _del files
+HBASE-17005 Improve log message in MobFileCache
+HBASE-16767 Mob compaction needs to clean up files in /hbase/mobdir/.tmp
+HBASE-14425 In Secure Zookeeper cluster superuser will not have sufficient permission if multiple values are configured in hbase.superuser (Pankaj Kumar)

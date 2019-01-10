@@ -18,6 +18,8 @@
  */
 package org.apache.hadoop.hbase.security.access;
 
+import com.google.common.net.HostAndPort;
+
 import java.io.IOException;
 import java.net.InetAddress;
 import java.security.PrivilegedExceptionAction;
@@ -49,6 +51,7 @@ import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.KeyValue.Type;
 import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
+import org.apache.hadoop.hbase.ProcedureInfo;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Tag;
@@ -64,6 +67,7 @@ import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Query;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.coprocessor.BaseMasterAndRegionObserver;
 import org.apache.hadoop.hbase.coprocessor.BulkLoadObserver;
 import org.apache.hadoop.hbase.coprocessor.CoprocessorException;
@@ -81,6 +85,8 @@ import org.apache.hadoop.hbase.filter.FilterList;
 import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.ipc.RpcServer;
 import org.apache.hadoop.hbase.master.MasterServices;
+import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
+import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.ResponseConverter;
 import org.apache.hadoop.hbase.protobuf.generated.AccessControlProtos;
@@ -254,10 +260,12 @@ public class AccessController extends BaseMasterAndRegionObserver
     Configuration conf = regionEnv.getConfiguration();
     for (byte[] entry: entries) {
       try {
-        ListMultimap<String,TablePermission> perms =
-          AccessControlLists.getPermissions(conf, entry);
-        byte[] serialized = AccessControlLists.writePermissionsAsBytes(perms, conf);
-        zkw.writeToZookeeper(entry, serialized);
+        try (Table t = regionEnv.getTable(AccessControlLists.ACL_TABLE_NAME)) {
+          ListMultimap<String,TablePermission> perms =
+              AccessControlLists.getPermissions(conf, entry, t);
+          byte[] serialized = AccessControlLists.writePermissionsAsBytes(perms, conf);
+          zkw.writeToZookeeper(entry, serialized);
+        }
       } catch (IOException ex) {
         LOG.error("Failed updating permissions mirror for '" + Bytes.toString(entry) + "'",
             ex);
@@ -1009,6 +1017,7 @@ public class AccessController extends BaseMasterAndRegionObserver
     // wait till the acl table is created.
     if (AccessControlLists.isAclTable(desc)) {
       this.aclTabAvailable = true;
+      LOG.info(AccessControlLists.ACL_TABLE_NAME + " is created.");
     } else if (!(TableName.NAMESPACE_TABLE_NAME.equals(desc.getTableName()))) {
       if (!aclTabAvailable) {
         LOG.warn("Not adding owner permission for table " + desc.getTableName() + ". "
@@ -1026,7 +1035,7 @@ public class AccessController extends BaseMasterAndRegionObserver
           @Override
           public Void run() throws Exception {
             AccessControlLists.addUserPermission(c.getEnvironment().getConfiguration(),
-                userperm);
+                userperm, c.getEnvironment().getTable(AccessControlLists.ACL_TABLE_NAME));
             return null;
           }
         });
@@ -1041,13 +1050,14 @@ public class AccessController extends BaseMasterAndRegionObserver
   }
 
   @Override
-  public void postDeleteTable(ObserverContext<MasterCoprocessorEnvironment> c,
+  public void postDeleteTable(final ObserverContext<MasterCoprocessorEnvironment> c,
       final TableName tableName) throws IOException {
     final Configuration conf = c.getEnvironment().getConfiguration();
     User.runAsLoginUser(new PrivilegedExceptionAction<Void>() {
       @Override
       public Void run() throws Exception {
-        AccessControlLists.removeTablePermissions(conf, tableName);
+        AccessControlLists.removeTablePermissions(conf, tableName,
+            c.getEnvironment().getTable(AccessControlLists.ACL_TABLE_NAME));
         return null;
       }
     });
@@ -1073,7 +1083,7 @@ public class AccessController extends BaseMasterAndRegionObserver
   }
 
   @Override
-  public void postTruncateTable(ObserverContext<MasterCoprocessorEnvironment> ctx,
+  public void postTruncateTable(final ObserverContext<MasterCoprocessorEnvironment> ctx,
       final TableName tableName) throws IOException {
     final Configuration conf = ctx.getEnvironment().getConfiguration();
     User.runAsLoginUser(new PrivilegedExceptionAction<Void>() {
@@ -1082,7 +1092,8 @@ public class AccessController extends BaseMasterAndRegionObserver
         List<UserPermission> perms = tableAcls.get(tableName);
         if (perms != null) {
           for (UserPermission perm : perms) {
-            AccessControlLists.addUserPermission(conf, perm);
+            AccessControlLists.addUserPermission(conf, perm,
+                ctx.getEnvironment().getTable(AccessControlLists.ACL_TABLE_NAME));
           }
         }
         tableAcls.remove(tableName);
@@ -1098,7 +1109,7 @@ public class AccessController extends BaseMasterAndRegionObserver
   }
 
   @Override
-  public void postModifyTable(ObserverContext<MasterCoprocessorEnvironment> c,
+  public void postModifyTable(final ObserverContext<MasterCoprocessorEnvironment> c,
       TableName tableName, final HTableDescriptor htd) throws IOException {
     final Configuration conf = c.getEnvironment().getConfiguration();
     // default the table owner to current user, if not specified.
@@ -1109,7 +1120,8 @@ public class AccessController extends BaseMasterAndRegionObserver
       public Void run() throws Exception {
         UserPermission userperm = new UserPermission(Bytes.toBytes(owner),
           htd.getTableName(), null, Action.values());
-        AccessControlLists.addUserPermission(conf, userperm);
+        AccessControlLists.addUserPermission(conf, userperm,
+            c.getEnvironment().getTable(AccessControlLists.ACL_TABLE_NAME));
         return null;
       }
     });
@@ -1136,13 +1148,14 @@ public class AccessController extends BaseMasterAndRegionObserver
   }
 
   @Override
-  public void postDeleteColumn(ObserverContext<MasterCoprocessorEnvironment> c,
+  public void postDeleteColumn(final ObserverContext<MasterCoprocessorEnvironment> c,
       final TableName tableName, final byte[] col) throws IOException {
     final Configuration conf = c.getEnvironment().getConfiguration();
     User.runAsLoginUser(new PrivilegedExceptionAction<Void>() {
       @Override
       public Void run() throws Exception {
-        AccessControlLists.removeTablePermissions(conf, tableName, col);
+        AccessControlLists.removeTablePermissions(conf, tableName, col,
+            c.getEnvironment().getTable(AccessControlLists.ACL_TABLE_NAME));
         return null;
       }
     });
@@ -1166,6 +1179,57 @@ public class AccessController extends BaseMasterAndRegionObserver
           + AccessControlLists.ACL_TABLE_NAME + " table with AccessController installed");
     }
     requirePermission("disableTable", tableName, null, null, Action.ADMIN, Action.CREATE);
+  }
+
+  @Override
+  public void preAbortProcedure(
+      ObserverContext<MasterCoprocessorEnvironment> ctx,
+      final ProcedureExecutor<MasterProcedureEnv> procEnv,
+      final long procId) throws IOException {
+    if (!procEnv.isProcedureOwner(procId, getActiveUser())) {
+      // If the user is not the procedure owner, then we should further probe whether
+      // he can abort the procedure.
+      requirePermission("abortProcedure", Action.ADMIN);
+    }
+  }
+
+  @Override
+  public void postAbortProcedure(ObserverContext<MasterCoprocessorEnvironment> ctx)
+      throws IOException {
+    // There is nothing to do at this time after the procedure abort request was sent.
+  }
+
+  @Override
+  public void preListProcedures(ObserverContext<MasterCoprocessorEnvironment> ctx)
+      throws IOException {
+    // We are delegating the authorization check to postListProcedures as we don't have
+    // any concrete set of procedures to work with
+  }
+
+  @Override
+  public void postListProcedures(
+      ObserverContext<MasterCoprocessorEnvironment> ctx,
+      List<ProcedureInfo> procInfoList) throws IOException {
+    if (procInfoList.isEmpty()) {
+      return;
+    }
+
+    // Retains only those which passes authorization checks, as the checks weren't done as part
+    // of preListProcedures.
+    Iterator<ProcedureInfo> itr = procInfoList.iterator();
+    User user = getActiveUser();
+    while (itr.hasNext()) {
+      ProcedureInfo procInfo = itr.next();
+      try {
+        if (!ProcedureInfo.isProcedureOwner(procInfo, user)) {
+          // If the user is not the procedure owner, then we should further probe whether
+          // he can see the procedure.
+          requirePermission("listProcedures", Action.ADMIN);
+        }
+      } catch (AccessDeniedException e) {
+        itr.remove();
+      }
+    }
   }
 
   @Override
@@ -1224,7 +1288,9 @@ public class AccessController extends BaseMasterAndRegionObserver
       .getConnection(), AccessControlLists.ACL_TABLE_NAME)) {
       // initialize the ACL storage table
       AccessControlLists.createACLTable(ctx.getEnvironment().getMasterServices());
+      LOG.info("Creating " + AccessControlLists.ACL_TABLE_NAME + " table.");
     } else {
+      LOG.info(AccessControlLists.ACL_TABLE_NAME + " is existing.");
       aclTabAvailable = true;
     }
   }
@@ -1258,7 +1324,10 @@ public class AccessController extends BaseMasterAndRegionObserver
   public void preRestoreSnapshot(final ObserverContext<MasterCoprocessorEnvironment> ctx,
       final SnapshotDescription snapshot, final HTableDescriptor hTableDescriptor)
       throws IOException {
-    if (SnapshotDescriptionUtils.isSnapshotOwner(snapshot, getActiveUser())) {
+    User usr = getActiveUser();
+    LOG.info("Checking permission for " + usr + "(" + usr.getShortName() + ") on " +
+        snapshot.getOwner());
+    if (SnapshotDescriptionUtils.isSnapshotOwner(snapshot, usr)) {
       requirePermission("restoreSnapshot", hTableDescriptor.getTableName(), null, null,
         Permission.Action.ADMIN);
     } else {
@@ -1290,13 +1359,14 @@ public class AccessController extends BaseMasterAndRegionObserver
   }
 
   @Override
-  public void postDeleteNamespace(ObserverContext<MasterCoprocessorEnvironment> ctx,
+  public void postDeleteNamespace(final ObserverContext<MasterCoprocessorEnvironment> ctx,
       final String namespace) throws IOException {
     final Configuration conf = ctx.getEnvironment().getConfiguration();
     User.runAsLoginUser(new PrivilegedExceptionAction<Void>() {
       @Override
       public Void run() throws Exception {
-        AccessControlLists.removeNamespacePermissions(conf, namespace);
+        AccessControlLists.removeNamespacePermissions(conf, namespace,
+            ctx.getEnvironment().getTable(AccessControlLists.ACL_TABLE_NAME));
         return null;
       }
     });
@@ -2058,7 +2128,8 @@ public class AccessController extends BaseMasterAndRegionObserver
     String requestUserName = RpcServer.getRequestUserName();
     String owner = scannerOwners.get(s);
     if (authorizationEnabled && owner != null && !owner.equals(requestUserName)) {
-      throw new AccessDeniedException("User '"+ requestUserName +"' is not the scanner owner!");
+      throw new AccessDeniedException("User '"+ requestUserName +"' is not the scanner owner(" +
+          owner + ")!");
     }
   }
 
@@ -2154,14 +2225,15 @@ public class AccessController extends BaseMasterAndRegionObserver
               perm.getQualifier(), Action.ADMIN);
             break;
           case Namespace :
-            requireGlobalPermission("grant", Action.ADMIN, perm.getNamespace());
+            requireNamespacePermission("grant", perm.getNamespace(), Action.ADMIN);
            break;
         }
 
         User.runAsLoginUser(new PrivilegedExceptionAction<Void>() {
           @Override
           public Void run() throws Exception {
-            AccessControlLists.addUserPermission(regionEnv.getConfiguration(), perm);
+            AccessControlLists.addUserPermission(regionEnv.getConfiguration(), perm,
+                regionEnv.getTable(AccessControlLists.ACL_TABLE_NAME));
             return null;
           }
         });
@@ -2205,14 +2277,14 @@ public class AccessController extends BaseMasterAndRegionObserver
               perm.getQualifier(), Action.ADMIN);
             break;
           case Namespace :
-            requireGlobalPermission("revoke", Action.ADMIN, perm.getNamespace());
+            requireNamespacePermission("revoke", perm.getNamespace(), Action.ADMIN);
             break;
         }
 
         User.runAsLoginUser(new PrivilegedExceptionAction<Void>() {
           @Override
           public Void run() throws Exception {
-            AccessControlLists.removeUserPermission(regionEnv.getConfiguration(), perm);
+            AccessControlLists.removeUserPermission(regionEnv.getConfiguration(), perm, null);
             return null;
           }
         });
@@ -2566,5 +2638,35 @@ public class AccessController extends BaseMasterAndRegionObserver
   public void preSetNamespaceQuota(final ObserverContext<MasterCoprocessorEnvironment> ctx,
       final String namespace, final Quotas quotas) throws IOException {
     requirePermission("setNamespaceQuota", Action.ADMIN);
+  }
+
+  @Override
+  public void preMoveServers(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                             Set<HostAndPort> servers, String targetGroup) throws IOException {
+    requirePermission("moveServers", Action.ADMIN);
+  }
+
+  @Override
+  public void preMoveTables(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                            Set<TableName> tables, String targetGroup) throws IOException {
+    requirePermission("moveTables", Action.ADMIN);
+  }
+
+  @Override
+  public void preAddRSGroup(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                            String name) throws IOException {
+    requirePermission("addRSGroup", Action.ADMIN);
+  }
+
+  @Override
+  public void preRemoveRSGroup(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                               String name) throws IOException {
+    requirePermission("removeRSGroup", Action.ADMIN);
+  }
+
+  @Override
+  public void preBalanceRSGroup(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                                String groupName) throws IOException {
+    requirePermission("balanceRSGroup", Action.ADMIN);
   }
 }

@@ -23,6 +23,7 @@ import java.util.regex.Pattern;
 
 import org.apache.hadoop.hbase.util.ByteStringer;
 
+import org.apache.hadoop.hbase.backup.BackupType;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.CellScannable;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
@@ -33,6 +34,7 @@ import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Action;
+import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.Append;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Durability;
@@ -79,8 +81,10 @@ import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.ScanRequest;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.CompareType;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.RegionSpecifier;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.RegionSpecifier.RegionSpecifierType;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.AddColumnRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.AssignRegionRequest;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.BackupTablesRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.BalanceRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.CreateTableRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.DeleteColumnRequest;
@@ -96,14 +100,22 @@ import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.GetTableNamesRequ
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsBalancerEnabledRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsCatalogJanitorEnabledRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsMasterRunningRequest;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsNormalizerEnabledRequest;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsSplitOrMergeEnabledRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.ModifyColumnRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.ModifyTableRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.MoveRegionRequest;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.NormalizeRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.OfflineRegionRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.RunCatalogScanRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.SetBalancerRunningRequest;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.SetNormalizerRunningRequest;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.SetSplitOrMergeEnabledRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.TruncateTableRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.UnassignRegionRequest;
+import org.apache.hadoop.hbase.protobuf.generated.QuotaProtos.GetSpaceQuotaEnforcementsRequest;
+import org.apache.hadoop.hbase.protobuf.generated.QuotaProtos.GetSpaceQuotaRegionSizesRequest;
+import org.apache.hadoop.hbase.protobuf.generated.QuotaProtos.GetSpaceQuotaSnapshotsRequest;
 import org.apache.hadoop.hbase.protobuf.generated.RegionServerStatusProtos.GetLastFlushedSequenceIdRequest;
 import org.apache.hadoop.hbase.util.ByteStringer;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -525,7 +537,7 @@ public final class RequestConverter {
    * @return a scan request
    */
   public static ScanRequest buildScanRequest(final long scannerId, final int numberOfRows,
-      final boolean closeScanner, final long nextCallSeq) {
+      final boolean closeScanner, final long nextCallSeq, final boolean renew) {
     ScanRequest.Builder builder = ScanRequest.newBuilder();
     builder.setNumberOfRows(numberOfRows);
     builder.setCloseScanner(closeScanner);
@@ -533,6 +545,7 @@ public final class RequestConverter {
     builder.setNextCallSeq(nextCallSeq);
     builder.setClientHandlesPartials(true);
     builder.setClientHandlesHeartbeats(true);
+    builder.setRenew(renew);
     return builder.build();
   }
 
@@ -547,6 +560,20 @@ public final class RequestConverter {
   public static BulkLoadHFileRequest buildBulkLoadHFileRequest(
       final List<Pair<byte[], String>> familyPaths,
       final byte[] regionName, boolean assignSeqNum) {
+    return buildBulkLoadHFileRequest(familyPaths, regionName, assignSeqNum, false);
+  }
+
+  /**
+   * Create a protocol buffer bulk load request
+   *
+   * @param familyPaths
+   * @param regionName
+   * @param assignSeqNum
+   * @return a bulk load request
+   */
+  public static BulkLoadHFileRequest buildBulkLoadHFileRequest(
+      final List<Pair<byte[], String>> familyPaths,
+      final byte[] regionName, boolean assignSeqNum, boolean copyFiles) {
     BulkLoadHFileRequest.Builder builder = BulkLoadHFileRequest.newBuilder();
     RegionSpecifier region = buildRegionSpecifier(
       RegionSpecifierType.REGION_NAME, regionName);
@@ -558,6 +585,7 @@ public final class RequestConverter {
       builder.addFamilyPath(familyPathBuilder.build());
     }
     builder.setAssignSeqNum(assignSeqNum);
+    builder.setCopyFile(copyFiles);
     return builder.build();
   }
 
@@ -1059,10 +1087,15 @@ public final class RequestConverter {
    * @return an AddColumnRequest
    */
   public static AddColumnRequest buildAddColumnRequest(
-      final TableName tableName, final HColumnDescriptor column) {
+      final TableName tableName,
+      final HColumnDescriptor column,
+      final long nonceGroup,
+      final long nonce) {
     AddColumnRequest.Builder builder = AddColumnRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName(tableName));
     builder.setColumnFamilies(column.convert());
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1074,10 +1107,15 @@ public final class RequestConverter {
    * @return a DeleteColumnRequest
    */
   public static DeleteColumnRequest buildDeleteColumnRequest(
-      final TableName tableName, final byte [] columnName) {
+      final TableName tableName,
+      final byte [] columnName,
+      final long nonceGroup,
+      final long nonce) {
     DeleteColumnRequest.Builder builder = DeleteColumnRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName((tableName)));
     builder.setColumnName(ByteStringer.wrap(columnName));
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1089,10 +1127,15 @@ public final class RequestConverter {
    * @return an ModifyColumnRequest
    */
   public static ModifyColumnRequest buildModifyColumnRequest(
-      final TableName tableName, final HColumnDescriptor column) {
+      final TableName tableName,
+      final HColumnDescriptor column,
+      final long nonceGroup,
+      final long nonce) {
     ModifyColumnRequest.Builder builder = ModifyColumnRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName((tableName)));
     builder.setColumnFamilies(column.convert());
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1174,9 +1217,14 @@ public final class RequestConverter {
    * @param tableName
    * @return a DeleteTableRequest
    */
-  public static DeleteTableRequest buildDeleteTableRequest(final TableName tableName) {
+  public static DeleteTableRequest buildDeleteTableRequest(
+      final TableName tableName,
+      final long nonceGroup,
+      final long nonce) {
     DeleteTableRequest.Builder builder = DeleteTableRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName(tableName));
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1187,11 +1235,16 @@ public final class RequestConverter {
    * @param preserveSplits True if the splits should be preserved
    * @return a TruncateTableRequest
    */
-  public static TruncateTableRequest buildTruncateTableRequest(final TableName tableName,
-        boolean preserveSplits) {
+  public static TruncateTableRequest buildTruncateTableRequest(
+      final TableName tableName,
+      final boolean preserveSplits,
+      final long nonceGroup,
+      final long nonce) {
     TruncateTableRequest.Builder builder = TruncateTableRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName(tableName));
     builder.setPreserveSplits(preserveSplits);
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1201,9 +1254,14 @@ public final class RequestConverter {
    * @param tableName
    * @return an EnableTableRequest
    */
-  public static EnableTableRequest buildEnableTableRequest(final TableName tableName) {
+  public static EnableTableRequest buildEnableTableRequest(
+      final TableName tableName,
+      final long nonceGroup,
+      final long nonce) {
     EnableTableRequest.Builder builder = EnableTableRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName(tableName));
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1213,9 +1271,14 @@ public final class RequestConverter {
    * @param tableName
    * @return a DisableTableRequest
    */
-  public static DisableTableRequest buildDisableTableRequest(final TableName tableName) {
+  public static DisableTableRequest buildDisableTableRequest(
+      final TableName tableName,
+      final long nonceGroup,
+      final long nonce) {
     DisableTableRequest.Builder builder = DisableTableRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName((tableName)));
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1227,7 +1290,10 @@ public final class RequestConverter {
    * @return a CreateTableRequest
    */
   public static CreateTableRequest buildCreateTableRequest(
-      final HTableDescriptor hTableDesc, final byte [][] splitKeys) {
+      final HTableDescriptor hTableDesc,
+      final byte [][] splitKeys,
+      final long nonceGroup,
+      final long nonce) {
     CreateTableRequest.Builder builder = CreateTableRequest.newBuilder();
     builder.setTableSchema(hTableDesc.convert());
     if (splitKeys != null) {
@@ -1235,6 +1301,8 @@ public final class RequestConverter {
         builder.addSplitKeys(ByteStringer.wrap(splitKey));
       }
     }
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1247,10 +1315,31 @@ public final class RequestConverter {
    * @return a ModifyTableRequest
    */
   public static ModifyTableRequest buildModifyTableRequest(
-      final TableName tableName, final HTableDescriptor hTableDesc) {
+      final TableName tableName,
+      final HTableDescriptor hTableDesc,
+      final long nonceGroup,
+      final long nonce) {
     ModifyTableRequest.Builder builder = ModifyTableRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName((tableName)));
     builder.setTableSchema(hTableDesc.convert());
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
+    return builder.build();
+  }
+
+  public static BackupTablesRequest buildBackupTablesRequest(
+      final BackupType type, List<TableName> tableList, String targetRootDir, final int workers,
+      final long bandwidth) {
+    BackupTablesRequest.Builder builder = BackupTablesRequest.newBuilder();
+    builder.setType(ProtobufUtil.toProtoBackupType(type));
+    builder.setTargetRootDir(targetRootDir);
+    builder.setWorkers(workers);
+    builder.setBandwidth(bandwidth);
+    if (tableList != null) {
+      for (TableName table : tableList) {
+        builder.addTables(ProtobufUtil.toProtoTableName(table));
+      }
+    }
     return builder.build();
   }
 
@@ -1341,8 +1430,8 @@ public final class RequestConverter {
    *
    * @return a BalanceRequest
    */
-  public static BalanceRequest buildBalanceRequest() {
-    return BalanceRequest.newBuilder().build();
+  public static BalanceRequest buildBalanceRequest(boolean force) {
+    return BalanceRequest.newBuilder().setForce(force).build();
   }
 
   /**
@@ -1352,7 +1441,9 @@ public final class RequestConverter {
    * @param synchronous
    * @return a SetBalancerRunningRequest
    */
-  public static SetBalancerRunningRequest buildSetBalancerRunningRequest(boolean on, boolean synchronous) {
+  public static SetBalancerRunningRequest buildSetBalancerRunningRequest(
+      boolean on,
+      boolean synchronous) {
     return SetBalancerRunningRequest.newBuilder().setOn(on).setSynchronous(synchronous).build();
   }
 
@@ -1641,5 +1732,108 @@ public final class RequestConverter {
       builder.setOpenForDistributedLogReplay(openForReplay);
     }
     return builder.build();
+  }
+
+  /**
+   * Creates a protocol buffer NormalizeRequest
+   *
+   * @return a NormalizeRequest
+   */
+  public static NormalizeRequest buildNormalizeRequest() {
+    return NormalizeRequest.newBuilder().build();
+  }
+
+  /**
+   * Creates a protocol buffer IsNormalizerEnabledRequest
+   *
+   * @return a IsNormalizerEnabledRequest
+   */
+  public static IsNormalizerEnabledRequest buildIsNormalizerEnabledRequest() {
+    return IsNormalizerEnabledRequest.newBuilder().build();
+  }
+
+  /**
+   * Creates a protocol buffer SetNormalizerRunningRequest
+   *
+   * @param on
+   * @return a SetNormalizerRunningRequest
+   */
+  public static SetNormalizerRunningRequest buildSetNormalizerRunningRequest(boolean on) {
+    return SetNormalizerRunningRequest.newBuilder().setOn(on).build();
+  }
+
+  /**
+   * Creates a protocol buffer IsSplitOrMergeEnabledRequest
+   *
+   * @param switchType see {@link org.apache.hadoop.hbase.client.Admin.MasterSwitchType}
+   * @return a IsSplitOrMergeEnabledRequest
+   */
+  public static IsSplitOrMergeEnabledRequest buildIsSplitOrMergeEnabledRequest(
+    Admin.MasterSwitchType switchType) {
+    IsSplitOrMergeEnabledRequest.Builder builder = IsSplitOrMergeEnabledRequest.newBuilder();
+    builder.setSwitchType(convert(switchType));
+    return builder.build();
+  }
+
+  /**
+   * Creates a protocol buffer SetSplitOrMergeEnabledRequest
+   *
+   * @param enabled switch is enabled or not
+   * @param synchronous set switch sync?
+   * @param switchTypes see {@link org.apache.hadoop.hbase.client.Admin.MasterSwitchType}, it is
+   *                    a list.
+   * @return a SetSplitOrMergeEnabledRequest
+   */
+  public static SetSplitOrMergeEnabledRequest buildSetSplitOrMergeEnabledRequest(boolean enabled,
+    boolean synchronous, Admin.MasterSwitchType... switchTypes) {
+    SetSplitOrMergeEnabledRequest.Builder builder = SetSplitOrMergeEnabledRequest.newBuilder();
+    builder.setEnabled(enabled);
+    builder.setSynchronous(synchronous);
+    for (Admin.MasterSwitchType switchType : switchTypes) {
+      builder.addSwitchTypes(convert(switchType));
+    }
+    return builder.build();
+  }
+
+  private static MasterProtos.MasterSwitchType convert(Admin.MasterSwitchType switchType) {
+    switch (switchType) {
+      case SPLIT:
+        return MasterProtos.MasterSwitchType.SPLIT;
+      case MERGE:
+        return MasterProtos.MasterSwitchType.MERGE;
+      default:
+        break;
+    }
+    throw new UnsupportedOperationException("Unsupport switch type:" + switchType);
+  }
+
+  private static final GetSpaceQuotaRegionSizesRequest GET_SPACE_QUOTA_REGION_SIZES_REQUEST =
+      GetSpaceQuotaRegionSizesRequest.newBuilder().build();
+
+  /**
+   * Returns a {@link GetSpaceQuotaRegionSizesRequest} object.
+   */
+  public static GetSpaceQuotaRegionSizesRequest buildGetSpaceQuotaRegionSizesRequest() {
+    return GET_SPACE_QUOTA_REGION_SIZES_REQUEST;
+  }
+
+  private static final GetSpaceQuotaSnapshotsRequest GET_SPACE_QUOTA_SNAPSHOTS_REQUEST =
+      GetSpaceQuotaSnapshotsRequest.newBuilder().build();
+
+  /**
+   * Returns a {@link GetSpaceQuotaSnapshotsRequest} object.
+   */
+  public static GetSpaceQuotaSnapshotsRequest buildGetSpaceQuotaSnapshotsRequest() {
+    return GET_SPACE_QUOTA_SNAPSHOTS_REQUEST;
+  }
+
+  private static final GetSpaceQuotaEnforcementsRequest GET_SPACE_QUOTA_ENFORCEMENTS_REQUEST =
+      GetSpaceQuotaEnforcementsRequest.newBuilder().build();
+
+  /**
+   * Returns a {@link GetSpaceQuotaEnforcementsRequest} object.
+   */
+  public static GetSpaceQuotaEnforcementsRequest buildGetSpaceQuotaEnforcementsRequest() {
+    return GET_SPACE_QUOTA_ENFORCEMENTS_REQUEST;
   }
 }

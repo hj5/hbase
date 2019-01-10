@@ -80,6 +80,10 @@ public class StoreFileScanner implements KeyValueScanner {
     this.hasMVCCInfo = hasMVCC;
   }
 
+  boolean isPrimaryReplica() {
+    return reader.isPrimaryReplicaReader();
+  }
+
   /**
    * Return an array of scanners corresponding to the given
    * set of store files.
@@ -99,7 +103,7 @@ public class StoreFileScanner implements KeyValueScanner {
       Collection<StoreFile> files, boolean cacheBlocks, boolean usePread,
       boolean isCompaction, long readPt) throws IOException {
     return getScannersForStoreFiles(files, cacheBlocks, usePread, isCompaction,
-        null, readPt);
+        null, readPt, true);
   }
 
   /**
@@ -109,17 +113,26 @@ public class StoreFileScanner implements KeyValueScanner {
    */
   public static List<StoreFileScanner> getScannersForStoreFiles(
       Collection<StoreFile> files, boolean cacheBlocks, boolean usePread,
-      boolean isCompaction, ScanQueryMatcher matcher, long readPt) throws IOException {
+      boolean isCompaction, ScanQueryMatcher matcher, long readPt, boolean isPrimaryReplica)
+          throws IOException {
     List<StoreFileScanner> scanners = new ArrayList<StoreFileScanner>(
         files.size());
     for (StoreFile file : files) {
       StoreFile.Reader r = file.createReader();
+      r.setReplicaStoreFile(isPrimaryReplica);
       StoreFileScanner scanner = r.getStoreFileScanner(cacheBlocks, usePread,
           isCompaction, readPt);
       scanner.setScanQueryMatcher(matcher);
       scanners.add(scanner);
     }
     return scanners;
+  }
+
+  public static List<StoreFileScanner> getScannersForStoreFiles(
+    Collection<StoreFile> files, boolean cacheBlocks, boolean usePread,
+    boolean isCompaction, ScanQueryMatcher matcher, long readPt) throws IOException {
+    return getScannersForStoreFiles(files, cacheBlocks, usePread, isCompaction,
+      matcher, readPt, true);
   }
 
   public String toString() {
@@ -200,7 +213,7 @@ public class StoreFileScanner implements KeyValueScanner {
 
   protected void setCurrentCell(Cell newVal) throws IOException {
     this.cur = newVal;
-    if (this.cur != null && this.reader.isBulkLoaded()) {
+    if (this.cur != null && this.reader.isBulkLoaded() && !this.reader.isSkipResetSeqId()) {
       CellUtil.setSequenceId(cur, this.reader.getSequenceID());
     }
   }
@@ -212,9 +225,9 @@ public class StoreFileScanner implements KeyValueScanner {
     while(enforceMVCC
         && cur != null
         && (cur.getMvccVersion() > readPt)) {
-      hfs.next();
+      boolean hasNext = hfs.next();
       setCurrentCell(hfs.getKeyValue());
-      if (this.stopSkippingKVsIfNextRow
+      if (hasNext && this.stopSkippingKVsIfNextRow
           && getComparator().compareRows(cur.getRowArray(), cur.getRowOffset(),
               cur.getRowLength(), startKV.getRowArray(), startKV.getRowOffset(),
               startKV.getRowLength()) > 0) {
@@ -416,46 +429,53 @@ public class StoreFileScanner implements KeyValueScanner {
 
   @Override
   @SuppressWarnings("deprecation")
-  public boolean seekToPreviousRow(Cell key) throws IOException {
+  public boolean seekToPreviousRow(Cell originalKey) throws IOException {
     try {
       try {
-        KeyValue seekKey = KeyValueUtil.createFirstOnRow(key.getRowArray(), key.getRowOffset(),
-            key.getRowLength());
-        if (seekCount != null) seekCount.incrementAndGet();
-        if (!hfs.seekBefore(seekKey.getBuffer(), seekKey.getKeyOffset(),
-            seekKey.getKeyLength())) {
-          close();
-          return false;
-        }
-        KeyValue firstKeyOfPreviousRow = KeyValueUtil.createFirstOnRow(hfs.getKeyValue()
-            .getRowArray(), hfs.getKeyValue().getRowOffset(), hfs.getKeyValue().getRowLength());
+        boolean keepSeeking = false;
+        Cell key = originalKey;
+        do {
+          KeyValue seekKey = KeyValueUtil.createFirstOnRow(key.getRowArray(), key.getRowOffset(),
+              key.getRowLength());
+          if (seekCount != null) seekCount.incrementAndGet();
+          if (!hfs.seekBefore(seekKey.getBuffer(), seekKey.getKeyOffset(),
+              seekKey.getKeyLength())) {
+            close();
+            return false;
+          }
+          KeyValue firstKeyOfPreviousRow = KeyValueUtil.createFirstOnRow(hfs.getKeyValue()
+              .getRowArray(), hfs.getKeyValue().getRowOffset(), hfs.getKeyValue().getRowLength());
 
-        if (seekCount != null) seekCount.incrementAndGet();
-        if (!seekAtOrAfter(hfs, firstKeyOfPreviousRow)) {
-          close();
-          return false;
-        }
+          if (seekCount != null) seekCount.incrementAndGet();
+          if (!seekAtOrAfter(hfs, firstKeyOfPreviousRow)) {
+            close();
+            return false;
+          }
 
-        setCurrentCell(hfs.getKeyValue());
-        this.stopSkippingKVsIfNextRow = true;
-        boolean resultOfSkipKVs;
-        try {
-          resultOfSkipKVs = skipKVsNewerThanReadpoint();
-        } finally {
-          this.stopSkippingKVsIfNextRow = false;
-        }
-        if (!resultOfSkipKVs
-            || getComparator().compareRows(cur, firstKeyOfPreviousRow) > 0) {
-          return seekToPreviousRow(firstKeyOfPreviousRow);
-        }
-
+          setCurrentCell(hfs.getKeyValue());
+          this.stopSkippingKVsIfNextRow = true;
+          boolean resultOfSkipKVs;
+          try {
+            resultOfSkipKVs = skipKVsNewerThanReadpoint();
+          } finally {
+            this.stopSkippingKVsIfNextRow = false;
+          }
+          if (!resultOfSkipKVs
+              || getComparator().compareRows(cur, firstKeyOfPreviousRow) > 0) {
+            keepSeeking = true;
+            key = firstKeyOfPreviousRow;
+            continue;
+          } else {
+            keepSeeking = false;
+          }
+        } while (keepSeeking);
         return true;
       } finally {
         realSeekDone = true;
       }
     } catch (IOException ioe) {
       throw new IOException("Could not seekToPreviousRow " + this + " to key "
-          + key, ioe);
+          + originalKey, ioe);
     }
   }
 

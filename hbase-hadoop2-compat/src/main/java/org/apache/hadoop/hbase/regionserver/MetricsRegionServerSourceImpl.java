@@ -24,7 +24,7 @@ import org.apache.hadoop.metrics2.MetricHistogram;
 import org.apache.hadoop.metrics2.MetricsCollector;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.apache.hadoop.metrics2.lib.Interns;
-import org.apache.hadoop.metrics2.lib.MutableCounterLong;
+import org.apache.hadoop.metrics2.lib.MutableFastCounter;
 
 /**
  * Hadoop2 implementation of MetricsRegionServerSource.
@@ -42,18 +42,49 @@ public class MetricsRegionServerSourceImpl
   private final MetricHistogram incrementHisto;
   private final MetricHistogram appendHisto;
   private final MetricHistogram replayHisto;
-  private final MetricHistogram scanNextHisto;
+  private final MetricHistogram scanSizeHisto;
+  private final MetricHistogram scanTimeHisto;
 
-  private final MutableCounterLong slowPut;
-  private final MutableCounterLong slowDelete;
-  private final MutableCounterLong slowGet;
-  private final MutableCounterLong slowIncrement;
-  private final MutableCounterLong slowAppend;
-  private final MutableCounterLong splitRequest;
-  private final MutableCounterLong splitSuccess;
+  private final MutableFastCounter slowPut;
+  private final MutableFastCounter slowDelete;
+  private final MutableFastCounter slowGet;
+  private final MutableFastCounter slowIncrement;
+  private final MutableFastCounter slowAppend;
 
+  // split related metrics
+  private final MutableFastCounter splitRequest;
+  private final MutableFastCounter splitSuccess;
   private final MetricHistogram splitTimeHisto;
+
+  // flush related metrics
   private final MetricHistogram flushTimeHisto;
+  private final MetricHistogram flushMemstoreSizeHisto;
+  private final MetricHistogram flushOutputSizeHisto;
+  private final MutableFastCounter flushedMemstoreBytes;
+  private final MutableFastCounter flushedOutputBytes;
+
+  // compaction related metrics
+  private final MetricHistogram compactionTimeHisto;
+  private final MetricHistogram compactionInputFileCountHisto;
+  private final MetricHistogram compactionInputSizeHisto;
+  private final MetricHistogram compactionOutputFileCountHisto;
+  private final MetricHistogram compactionOutputSizeHisto;
+  private final MutableFastCounter compactedInputBytes;
+  private final MutableFastCounter compactedOutputBytes;
+
+  private final MetricHistogram majorCompactionTimeHisto;
+  private final MetricHistogram majorCompactionInputFileCountHisto;
+  private final MetricHistogram majorCompactionInputSizeHisto;
+  private final MetricHistogram majorCompactionOutputFileCountHisto;
+  private final MetricHistogram majorCompactionOutputSizeHisto;
+  private final MutableFastCounter majorCompactedInputBytes;
+  private final MutableFastCounter majorCompactedOutputBytes;
+
+  // pause monitor metrics
+  private final MutableFastCounter infoPauseThresholdExceeded;
+  private final MutableFastCounter warnPauseThresholdExceeded;
+  private final MetricHistogram pausesWithGc;
+  private final MetricHistogram pausesWithoutGc;
 
   public MetricsRegionServerSourceImpl(MetricsRegionServerWrapper rsWrap) {
     this(METRICS_NAME, METRICS_DESCRIPTION, METRICS_CONTEXT, METRICS_JMX_CONTEXT, rsWrap);
@@ -67,29 +98,76 @@ public class MetricsRegionServerSourceImpl
     super(metricsName, metricsDescription, metricsContext, metricsJmxContext);
     this.rsWrap = rsWrap;
 
-    putHisto = getMetricsRegistry().newHistogram(MUTATE_KEY);
-    slowPut = getMetricsRegistry().newCounter(SLOW_MUTATE_KEY, SLOW_MUTATE_DESC, 0l);
+    putHisto = getMetricsRegistry().newTimeHistogram(MUTATE_KEY);
+    slowPut = getMetricsRegistry().newCounter(SLOW_MUTATE_KEY, SLOW_MUTATE_DESC, 0L);
 
-    deleteHisto = getMetricsRegistry().newHistogram(DELETE_KEY);
-    slowDelete = getMetricsRegistry().newCounter(SLOW_DELETE_KEY, SLOW_DELETE_DESC, 0l);
+    deleteHisto = getMetricsRegistry().newTimeHistogram(DELETE_KEY);
+    slowDelete = getMetricsRegistry().newCounter(SLOW_DELETE_KEY, SLOW_DELETE_DESC, 0L);
 
-    getHisto = getMetricsRegistry().newHistogram(GET_KEY);
-    slowGet = getMetricsRegistry().newCounter(SLOW_GET_KEY, SLOW_GET_DESC, 0l);
+    getHisto = getMetricsRegistry().newTimeHistogram(GET_KEY);
+    slowGet = getMetricsRegistry().newCounter(SLOW_GET_KEY, SLOW_GET_DESC, 0L);
 
-    incrementHisto = getMetricsRegistry().newHistogram(INCREMENT_KEY);
+    incrementHisto = getMetricsRegistry().newTimeHistogram(INCREMENT_KEY);
     slowIncrement = getMetricsRegistry().newCounter(SLOW_INCREMENT_KEY, SLOW_INCREMENT_DESC, 0L);
 
-    appendHisto = getMetricsRegistry().newHistogram(APPEND_KEY);
-    slowAppend = getMetricsRegistry().newCounter(SLOW_APPEND_KEY, SLOW_APPEND_DESC, 0l);
-    
-    replayHisto = getMetricsRegistry().newHistogram(REPLAY_KEY);
-    scanNextHisto = getMetricsRegistry().newHistogram(SCAN_NEXT_KEY);
+    appendHisto = getMetricsRegistry().newTimeHistogram(APPEND_KEY);
+    slowAppend = getMetricsRegistry().newCounter(SLOW_APPEND_KEY, SLOW_APPEND_DESC, 0L);
 
-    splitTimeHisto = getMetricsRegistry().newHistogram(SPLIT_KEY);
-    flushTimeHisto = getMetricsRegistry().newHistogram(FLUSH_KEY);
+    replayHisto = getMetricsRegistry().newTimeHistogram(REPLAY_KEY);
+    scanSizeHisto = getMetricsRegistry().newSizeHistogram(SCAN_SIZE_KEY);
+    scanTimeHisto = getMetricsRegistry().newTimeHistogram(SCAN_TIME_KEY);
 
-    splitRequest = getMetricsRegistry().newCounter(SPLIT_REQUEST_KEY, SPLIT_REQUEST_DESC, 0l);
-    splitSuccess = getMetricsRegistry().newCounter(SPLIT_SUCCESS_KEY, SPLIT_SUCCESS_DESC, 0l);
+    flushTimeHisto = getMetricsRegistry().newTimeHistogram(FLUSH_TIME, FLUSH_TIME_DESC);
+    flushMemstoreSizeHisto = getMetricsRegistry()
+        .newSizeHistogram(FLUSH_MEMSTORE_SIZE, FLUSH_MEMSTORE_SIZE_DESC);
+    flushOutputSizeHisto = getMetricsRegistry().newSizeHistogram(FLUSH_OUTPUT_SIZE,
+      FLUSH_OUTPUT_SIZE_DESC);
+    flushedOutputBytes = getMetricsRegistry().newCounter(FLUSHED_OUTPUT_BYTES,
+      FLUSHED_OUTPUT_BYTES_DESC, 0L);
+    flushedMemstoreBytes = getMetricsRegistry().newCounter(FLUSHED_MEMSTORE_BYTES,
+      FLUSHED_MEMSTORE_BYTES_DESC, 0L);
+
+    compactionTimeHisto = getMetricsRegistry()
+        .newTimeHistogram(COMPACTION_TIME, COMPACTION_TIME_DESC);
+    compactionInputFileCountHisto = getMetricsRegistry()
+      .newHistogram(COMPACTION_INPUT_FILE_COUNT, COMPACTION_INPUT_FILE_COUNT_DESC);
+    compactionInputSizeHisto = getMetricsRegistry()
+        .newSizeHistogram(COMPACTION_INPUT_SIZE, COMPACTION_INPUT_SIZE_DESC);
+    compactionOutputFileCountHisto = getMetricsRegistry()
+        .newHistogram(COMPACTION_OUTPUT_FILE_COUNT, COMPACTION_OUTPUT_FILE_COUNT_DESC);
+    compactionOutputSizeHisto = getMetricsRegistry()
+      .newSizeHistogram(COMPACTION_OUTPUT_SIZE, COMPACTION_OUTPUT_SIZE_DESC);
+    compactedInputBytes = getMetricsRegistry()
+        .newCounter(COMPACTED_INPUT_BYTES, COMPACTED_INPUT_BYTES_DESC, 0L);
+    compactedOutputBytes = getMetricsRegistry()
+        .newCounter(COMPACTED_OUTPUT_BYTES, COMPACTED_OUTPUT_BYTES_DESC, 0L);
+
+    majorCompactionTimeHisto = getMetricsRegistry()
+        .newTimeHistogram(MAJOR_COMPACTION_TIME, MAJOR_COMPACTION_TIME_DESC);
+    majorCompactionInputFileCountHisto = getMetricsRegistry()
+      .newHistogram(MAJOR_COMPACTION_INPUT_FILE_COUNT, MAJOR_COMPACTION_INPUT_FILE_COUNT_DESC);
+    majorCompactionInputSizeHisto = getMetricsRegistry()
+        .newSizeHistogram(MAJOR_COMPACTION_INPUT_SIZE, MAJOR_COMPACTION_INPUT_SIZE_DESC);
+    majorCompactionOutputFileCountHisto = getMetricsRegistry()
+        .newHistogram(MAJOR_COMPACTION_OUTPUT_FILE_COUNT, MAJOR_COMPACTION_OUTPUT_FILE_COUNT_DESC);
+    majorCompactionOutputSizeHisto = getMetricsRegistry()
+      .newSizeHistogram(MAJOR_COMPACTION_OUTPUT_SIZE, MAJOR_COMPACTION_OUTPUT_SIZE_DESC);
+    majorCompactedInputBytes = getMetricsRegistry()
+        .newCounter(MAJOR_COMPACTED_INPUT_BYTES, MAJOR_COMPACTED_INPUT_BYTES_DESC, 0L);
+    majorCompactedOutputBytes = getMetricsRegistry()
+        .newCounter(MAJOR_COMPACTED_OUTPUT_BYTES, MAJOR_COMPACTED_OUTPUT_BYTES_DESC, 0L);
+
+    splitTimeHisto = getMetricsRegistry().newTimeHistogram(SPLIT_KEY);
+    splitRequest = getMetricsRegistry().newCounter(SPLIT_REQUEST_KEY, SPLIT_REQUEST_DESC, 0L);
+    splitSuccess = getMetricsRegistry().newCounter(SPLIT_SUCCESS_KEY, SPLIT_SUCCESS_DESC, 0L);
+
+    // pause monitor metrics
+    infoPauseThresholdExceeded = getMetricsRegistry().newCounter(INFO_THRESHOLD_COUNT_KEY,
+      INFO_THRESHOLD_COUNT_DESC, 0L);
+    warnPauseThresholdExceeded = getMetricsRegistry().newCounter(WARN_THRESHOLD_COUNT_KEY,
+      WARN_THRESHOLD_COUNT_DESC, 0L);
+    pausesWithGc = getMetricsRegistry().newTimeHistogram(PAUSE_TIME_WITH_GC_KEY);
+    pausesWithoutGc = getMetricsRegistry().newTimeHistogram(PAUSE_TIME_WITHOUT_GC_KEY);
   }
 
   @Override
@@ -123,8 +201,13 @@ public class MetricsRegionServerSourceImpl
   }
 
   @Override
-  public void updateScannerNext(long scanSize) {
-    scanNextHisto.add(scanSize);
+  public void updateScanSize(long scanSize) {
+    scanSizeHisto.add(scanSize);
+  }
+
+  @Override
+  public void updateScanTime(long t) {
+    scanTimeHisto.add(t);
   }
 
   @Override
@@ -172,6 +255,62 @@ public class MetricsRegionServerSourceImpl
     flushTimeHisto.add(t);
   }
 
+  @Override
+  public void updateFlushMemstoreSize(long bytes) {
+    flushMemstoreSizeHisto.add(bytes);
+    flushedMemstoreBytes.incr(bytes);
+  }
+
+  @Override
+  public void updateFlushOutputSize(long bytes) {
+    flushOutputSizeHisto.add(bytes);
+    flushedOutputBytes.incr(bytes);
+  }
+
+  @Override
+  public void updateCompactionTime(boolean isMajor, long t) {
+    compactionTimeHisto.add(t);
+    if (isMajor) {
+      majorCompactionTimeHisto.add(t);
+    }
+  }
+
+  @Override
+  public void updateCompactionInputFileCount(boolean isMajor, long c) {
+    compactionInputFileCountHisto.add(c);
+    if (isMajor) {
+      majorCompactionInputFileCountHisto.add(c);
+    }
+  }
+
+  @Override
+  public void updateCompactionInputSize(boolean isMajor, long bytes) {
+    compactionInputSizeHisto.add(bytes);
+    compactedInputBytes.incr(bytes);
+    if (isMajor) {
+      majorCompactionInputSizeHisto.add(bytes);
+      majorCompactedInputBytes.incr(bytes);
+    }
+  }
+
+  @Override
+  public void updateCompactionOutputFileCount(boolean isMajor, long c) {
+    compactionOutputFileCountHisto.add(c);
+    if (isMajor) {
+      majorCompactionOutputFileCountHisto.add(c);
+    }
+  }
+
+  @Override
+  public void updateCompactionOutputSize(boolean isMajor, long bytes) {
+    compactionOutputSizeHisto.add(bytes);
+    compactedOutputBytes.incr(bytes);
+    if (isMajor) {
+      majorCompactionOutputSizeHisto.add(bytes);
+      majorCompactedOutputBytes.incr(bytes);
+    }
+  }
+
   /**
    * Yes this is a get function that doesn't return anything.  Thanks Hadoop for breaking all
    * expectations of java programmers.  Instead of returning anything Hadoop metrics expects
@@ -194,14 +333,31 @@ public class MetricsRegionServerSourceImpl
           .addGauge(Interns.info(STOREFILE_COUNT, STOREFILE_COUNT_DESC), rsWrap.getNumStoreFiles())
           .addGauge(Interns.info(MEMSTORE_SIZE, MEMSTORE_SIZE_DESC), rsWrap.getMemstoreSize())
           .addGauge(Interns.info(STOREFILE_SIZE, STOREFILE_SIZE_DESC), rsWrap.getStoreFileSize())
+          .addGauge(Interns.info(MAX_STORE_FILE_AGE, MAX_STORE_FILE_AGE_DESC),
+              rsWrap.getMaxStoreFileAge())
+          .addGauge(Interns.info(MIN_STORE_FILE_AGE, MIN_STORE_FILE_AGE_DESC),
+              rsWrap.getMinStoreFileAge())
+          .addGauge(Interns.info(AVG_STORE_FILE_AGE, AVG_STORE_FILE_AGE_DESC),
+              rsWrap.getAvgStoreFileAge())
+          .addGauge(Interns.info(NUM_REFERENCE_FILES, NUM_REFERENCE_FILES_DESC),
+              rsWrap.getNumReferenceFiles())
           .addGauge(Interns.info(RS_START_TIME_NAME, RS_START_TIME_DESC),
               rsWrap.getStartCode())
+          .addGauge(Interns.info(AVERAGE_REGION_SIZE, AVERAGE_REGION_SIZE_DESC), rsWrap.getAverageRegionSize())
           .addCounter(Interns.info(TOTAL_REQUEST_COUNT, TOTAL_REQUEST_COUNT_DESC),
               rsWrap.getTotalRequestCount())
           .addCounter(Interns.info(READ_REQUEST_COUNT, READ_REQUEST_COUNT_DESC),
               rsWrap.getReadRequestsCount())
           .addCounter(Interns.info(WRITE_REQUEST_COUNT, WRITE_REQUEST_COUNT_DESC),
               rsWrap.getWriteRequestsCount())
+          .addCounter(Interns.info(RPC_GET_REQUEST_COUNT, RPC_GET_REQUEST_COUNT_DESC),
+            rsWrap.getRpcGetRequestsCount())
+          .addCounter(Interns.info(RPC_SCAN_REQUEST_COUNT, RPC_SCAN_REQUEST_COUNT_DESC),
+            rsWrap.getRpcScanRequestsCount())
+          .addCounter(Interns.info(RPC_MULTI_REQUEST_COUNT, RPC_MULTI_REQUEST_COUNT_DESC),
+            rsWrap.getRpcMultiRequestsCount())
+          .addCounter(Interns.info(RPC_MUTATE_REQUEST_COUNT, RPC_MUTATE_REQUEST_COUNT_DESC),
+            rsWrap.getRpcMutateRequestsCount())
           .addCounter(Interns.info(CHECK_MUTATE_FAILED_COUNT, CHECK_MUTATE_FAILED_COUNT_DESC),
               rsWrap.getCheckAndMutateChecksFailed())
           .addCounter(Interns.info(CHECK_MUTATE_PASSED_COUNT, CHECK_MUTATE_PASSED_COUNT_DESC),
@@ -226,8 +382,15 @@ public class MetricsRegionServerSourceImpl
               rsWrap.getSplitQueueSize())
           .addGauge(Interns.info(COMPACTION_QUEUE_LENGTH, COMPACTION_QUEUE_LENGTH_DESC),
               rsWrap.getCompactionQueueSize())
+          .addGauge(Interns.info(SMALL_COMPACTION_QUEUE_LENGTH, SMALL_COMPACTION_QUEUE_LENGTH_DESC),
+            rsWrap.getSmallCompactionQueueSize())
+          .addGauge(Interns.info(LARGE_COMPACTION_QUEUE_LENGTH, LARGE_COMPACTION_QUEUE_LENGTH_DESC),
+            rsWrap.getLargeCompactionQueueSize())
+          .addGauge(Interns.info(COMPACTION_QUEUE_LENGTH, COMPACTION_QUEUE_LENGTH_DESC),
+            rsWrap.getCompactionQueueSize())
           .addGauge(Interns.info(FLUSH_QUEUE_LENGTH, FLUSH_QUEUE_LENGTH_DESC),
               rsWrap.getFlushQueueSize())
+
           .addGauge(Interns.info(BLOCK_CACHE_FREE_SIZE, BLOCK_CACHE_FREE_DESC),
               rsWrap.getBlockCacheFreeSize())
           .addGauge(Interns.info(BLOCK_CACHE_COUNT, BLOCK_CACHE_COUNT_DESC),
@@ -236,14 +399,55 @@ public class MetricsRegionServerSourceImpl
               rsWrap.getBlockCacheSize())
           .addCounter(Interns.info(BLOCK_CACHE_HIT_COUNT, BLOCK_CACHE_HIT_COUNT_DESC),
               rsWrap.getBlockCacheHitCount())
+          .addCounter(Interns.info(BLOCK_CACHE_PRIMARY_HIT_COUNT,
+            BLOCK_CACHE_PRIMARY_HIT_COUNT_DESC), rsWrap.getBlockCachePrimaryHitCount())
           .addCounter(Interns.info(BLOCK_CACHE_MISS_COUNT, BLOCK_COUNT_MISS_COUNT_DESC),
               rsWrap.getBlockCacheMissCount())
+          .addCounter(Interns.info(BLOCK_CACHE_PRIMARY_MISS_COUNT,
+            BLOCK_COUNT_PRIMARY_MISS_COUNT_DESC), rsWrap.getBlockCachePrimaryMissCount())
           .addCounter(Interns.info(BLOCK_CACHE_EVICTION_COUNT, BLOCK_CACHE_EVICTION_COUNT_DESC),
               rsWrap.getBlockCacheEvictedCount())
+          .addCounter(Interns.info(BLOCK_CACHE_PRIMARY_EVICTION_COUNT,
+            BLOCK_CACHE_PRIMARY_EVICTION_COUNT_DESC), rsWrap.getBlockCachePrimaryEvictedCount())
           .addGauge(Interns.info(BLOCK_CACHE_HIT_PERCENT, BLOCK_CACHE_HIT_PERCENT_DESC),
               rsWrap.getBlockCacheHitPercent())
           .addGauge(Interns.info(BLOCK_CACHE_EXPRESS_HIT_PERCENT,
               BLOCK_CACHE_EXPRESS_HIT_PERCENT_DESC), rsWrap.getBlockCacheHitCachingPercent())
+          .addCounter(Interns.info(BLOCK_CACHE_DATA_MISS_COUNT, ""), rsWrap.getDataMissCount())
+          .addCounter(Interns.info(BLOCK_CACHE_LEAF_INDEX_MISS_COUNT, ""),
+              rsWrap.getLeafIndexMissCount())
+          .addCounter(Interns.info(BLOCK_CACHE_BLOOM_CHUNK_MISS_COUNT, ""),
+              rsWrap.getBloomChunkMissCount())
+          .addCounter(Interns.info(BLOCK_CACHE_META_MISS_COUNT, ""), rsWrap.getMetaMissCount())
+          .addCounter(Interns.info(BLOCK_CACHE_ROOT_INDEX_MISS_COUNT, ""),
+              rsWrap.getRootIndexMissCount())
+          .addCounter(Interns.info(BLOCK_CACHE_INTERMEDIATE_INDEX_MISS_COUNT, ""),
+              rsWrap.getIntermediateIndexMissCount())
+          .addCounter(Interns.info(BLOCK_CACHE_FILE_INFO_MISS_COUNT, ""),
+              rsWrap.getFileInfoMissCount())
+          .addCounter(Interns.info(BLOCK_CACHE_GENERAL_BLOOM_META_MISS_COUNT, ""),
+              rsWrap.getGeneralBloomMetaMissCount())
+          .addCounter(Interns.info(BLOCK_CACHE_DELETE_FAMILY_BLOOM_MISS_COUNT, ""),
+              rsWrap.getDeleteFamilyBloomMissCount())
+          .addCounter(Interns.info(BLOCK_CACHE_TRAILER_MISS_COUNT, ""),
+              rsWrap.getTrailerMissCount())
+          .addCounter(Interns.info(BLOCK_CACHE_DATA_HIT_COUNT, ""), rsWrap.getDataHitCount())
+          .addCounter(Interns.info(BLOCK_CACHE_LEAF_INDEX_HIT_COUNT, ""),
+              rsWrap.getLeafIndexHitCount())
+          .addCounter(Interns.info(BLOCK_CACHE_BLOOM_CHUNK_HIT_COUNT, ""),
+              rsWrap.getBloomChunkHitCount())
+          .addCounter(Interns.info(BLOCK_CACHE_META_HIT_COUNT, ""), rsWrap.getMetaHitCount())
+          .addCounter(Interns.info(BLOCK_CACHE_ROOT_INDEX_HIT_COUNT, ""),
+              rsWrap.getRootIndexHitCount())
+          .addCounter(Interns.info(BLOCK_CACHE_INTERMEDIATE_INDEX_HIT_COUNT, ""),
+              rsWrap.getIntermediateIndexHitCount())
+          .addCounter(Interns.info(BLOCK_CACHE_FILE_INFO_HIT_COUNT, ""),
+              rsWrap.getFileInfoHitCount())
+          .addCounter(Interns.info(BLOCK_CACHE_GENERAL_BLOOM_META_HIT_COUNT, ""),
+              rsWrap.getGeneralBloomMetaHitCount())
+          .addCounter(Interns.info(BLOCK_CACHE_DELETE_FAMILY_BLOOM_HIT_COUNT, ""),
+              rsWrap.getDeleteFamilyBloomHitCount())
+          .addCounter(Interns.info(BLOCK_CACHE_TRAILER_HIT_COUNT, ""), rsWrap.getTrailerHitCount())
           .addCounter(Interns.info(UPDATES_BLOCKED_TIME, UPDATES_BLOCKED_DESC),
               rsWrap.getUpdatesBlockedTime())
           .addCounter(Interns.info(FLUSHED_CELLS, FLUSHED_CELLS_DESC),
@@ -258,16 +462,63 @@ public class MetricsRegionServerSourceImpl
               rsWrap.getCompactedCellsSize())
           .addCounter(Interns.info(MAJOR_COMPACTED_CELLS_SIZE, MAJOR_COMPACTED_CELLS_SIZE_DESC),
               rsWrap.getMajorCompactedCellsSize())
-
+          .addCounter(Interns.info(CELLS_COUNT_COMPACTED_FROM_MOB, CELLS_COUNT_COMPACTED_FROM_MOB_DESC),
+              rsWrap.getCellsCountCompactedFromMob())
+          .addCounter(Interns.info(CELLS_COUNT_COMPACTED_TO_MOB, CELLS_COUNT_COMPACTED_TO_MOB_DESC),
+              rsWrap.getCellsCountCompactedToMob())
+          .addCounter(Interns.info(CELLS_SIZE_COMPACTED_FROM_MOB, CELLS_SIZE_COMPACTED_FROM_MOB_DESC),
+              rsWrap.getCellsSizeCompactedFromMob())
+          .addCounter(Interns.info(CELLS_SIZE_COMPACTED_TO_MOB, CELLS_SIZE_COMPACTED_TO_MOB_DESC),
+              rsWrap.getCellsSizeCompactedToMob())
+          .addCounter(Interns.info(MOB_FLUSH_COUNT, MOB_FLUSH_COUNT_DESC),
+              rsWrap.getMobFlushCount())
+          .addCounter(Interns.info(MOB_FLUSHED_CELLS_COUNT, MOB_FLUSHED_CELLS_COUNT_DESC),
+              rsWrap.getMobFlushedCellsCount())
+          .addCounter(Interns.info(MOB_FLUSHED_CELLS_SIZE, MOB_FLUSHED_CELLS_SIZE_DESC),
+              rsWrap.getMobFlushedCellsSize())
+          .addCounter(Interns.info(MOB_SCAN_CELLS_COUNT, MOB_SCAN_CELLS_COUNT_DESC),
+              rsWrap.getMobScanCellsCount())
+          .addCounter(Interns.info(MOB_SCAN_CELLS_SIZE, MOB_SCAN_CELLS_SIZE_DESC),
+              rsWrap.getMobScanCellsSize())
+          .addGauge(Interns.info(MOB_FILE_CACHE_COUNT, MOB_FILE_CACHE_COUNT_DESC),
+              rsWrap.getMobFileCacheCount())
+          .addCounter(Interns.info(MOB_FILE_CACHE_ACCESS_COUNT, MOB_FILE_CACHE_ACCESS_COUNT_DESC),
+              rsWrap.getMobFileCacheAccessCount())
+          .addCounter(Interns.info(MOB_FILE_CACHE_MISS_COUNT, MOB_FILE_CACHE_MISS_COUNT_DESC),
+              rsWrap.getMobFileCacheMissCount())
+          .addCounter(Interns.info(MOB_FILE_CACHE_EVICTED_COUNT, MOB_FILE_CACHE_EVICTED_COUNT_DESC),
+              rsWrap.getMobFileCacheEvictedCount())
+          .addGauge(Interns.info(MOB_FILE_CACHE_HIT_PERCENT, MOB_FILE_CACHE_HIT_PERCENT_DESC),
+              rsWrap.getMobFileCacheHitPercent())
           .addCounter(Interns.info(BLOCKED_REQUESTS_COUNT, BLOCKED_REQUESTS_COUNT_DESC),
             rsWrap.getBlockedRequestsCount())
-
           .tag(Interns.info(ZOOKEEPER_QUORUM_NAME, ZOOKEEPER_QUORUM_DESC),
               rsWrap.getZookeeperQuorum())
           .tag(Interns.info(SERVER_NAME_NAME, SERVER_NAME_DESC), rsWrap.getServerName())
           .tag(Interns.info(CLUSTER_ID_NAME, CLUSTER_ID_DESC), rsWrap.getClusterId());
+
     }
 
     metricsRegistry.snapshot(mrb, all);
+  }
+
+  @Override
+  public void incInfoThresholdExceeded(int count) {
+    infoPauseThresholdExceeded.incr(count);
+  }
+
+  @Override
+  public void incWarnThresholdExceeded(int count) {
+    warnPauseThresholdExceeded.incr(count);
+  }
+
+  @Override
+  public void updatePauseTimeWithGc(long t) {
+    pausesWithGc.add(t);
+  }
+
+  @Override
+  public void updatePauseTimeWithoutGc(long t) {
+    pausesWithoutGc.add(t);
   }
 }

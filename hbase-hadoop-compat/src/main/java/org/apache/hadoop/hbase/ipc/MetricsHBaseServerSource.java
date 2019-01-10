@@ -38,6 +38,10 @@ public interface MetricsHBaseServerSource extends BaseSource {
   String SENT_BYTES_DESC = "Number of bytes sent.";
   String RECEIVED_BYTES_NAME = "receivedBytes";
   String RECEIVED_BYTES_DESC = "Number of bytes received.";
+  String REQUEST_SIZE_NAME = "requestSize";
+  String REQUEST_SIZE_DESC = "Request size in bytes.";
+  String RESPONSE_SIZE_NAME = "responseSize";
+  String RESPONSE_SIZE_DESC = "Response size in bytes.";
   String QUEUE_CALL_TIME_NAME = "queueCallTime";
   String QUEUE_CALL_TIME_DESC = "Queue Call Time.";
   String PROCESS_CALL_TIME_NAME = "processCallTime";
@@ -57,6 +61,12 @@ public interface MetricsHBaseServerSource extends BaseSource {
   String NUM_OPEN_CONNECTIONS_DESC = "Number of open connections.";
   String NUM_ACTIVE_HANDLER_NAME = "numActiveHandler";
   String NUM_ACTIVE_HANDLER_DESC = "Number of active rpc handlers.";
+  String NUM_GENERAL_CALLS_DROPPED_NAME = "numGeneralCallsDropped";
+  String NUM_GENERAL_CALLS_DROPPED_DESC = "Total number of calls in general queue which " +
+    "were dropped by CoDel RPC executor";
+  String NUM_LIFO_MODE_SWITCHES_NAME = "numLifoModeSwitches";
+  String NUM_LIFO_MODE_SWITCHES_DESC = "Total number of calls in general queue which " +
+    "were served from the tail of the queue";
 
   String EXCEPTIONS_NAME="exceptions";
   String EXCEPTIONS_DESC="Exceptions caused by requests";
@@ -64,6 +74,7 @@ public interface MetricsHBaseServerSource extends BaseSource {
   String EXCEPTIONS_OOO_NAME="exceptions.OutOfOrderScannerNextException";
   String EXCEPTIONS_BUSY_NAME="exceptions.RegionTooBusyException";
   String EXCEPTIONS_UNKNOWN_NAME="exceptions.UnknownScannerException";
+  String EXCEPTIONS_SCANNER_RESET_NAME="exceptions.ScannerResetException";
   String EXCEPTIONS_SANITY_NAME="exceptions.FailedSanityCheckException";
   String EXCEPTIONS_MOVED_NAME="exceptions.RegionMovedException";
   String EXCEPTIONS_NSRE_NAME="exceptions.NotServingRegionException";
@@ -86,11 +97,16 @@ public interface MetricsHBaseServerSource extends BaseSource {
   void movedRegionException();
   void notServingRegionException();
   void unknownScannerException();
+  void scannerResetException();
   void tooBusyException();
 
   void sentBytes(long count);
 
   void receivedBytes(int count);
+
+  void sentResponse(long count);
+
+  void receivedRequest(long count);
 
   void dequeuedCall(int qTime);
 

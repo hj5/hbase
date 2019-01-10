@@ -26,7 +26,10 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.security.PrivilegedAction;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -46,6 +49,7 @@ import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.ProcedureInfo;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.ServerName;
@@ -88,13 +92,21 @@ import org.apache.hadoop.hbase.io.hfile.CacheConfig;
 import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.io.hfile.HFileContext;
 import org.apache.hadoop.hbase.io.hfile.HFileContextBuilder;
+import org.apache.hadoop.hbase.ipc.protobuf.generated.TestProcedureProtos;
 import org.apache.hadoop.hbase.mapreduce.LoadIncrementalHFiles;
+import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.MasterCoprocessorHost;
+import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
+import org.apache.hadoop.hbase.master.procedure.TableProcedureInterface;
+import org.apache.hadoop.hbase.procedure2.Procedure;
+import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
+import org.apache.hadoop.hbase.procedure2.ProcedureYieldException;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.generated.AccessControlProtos;
 import org.apache.hadoop.hbase.protobuf.generated.AccessControlProtos.AccessControlService;
 import org.apache.hadoop.hbase.protobuf.generated.AccessControlProtos.CheckPermissionsRequest;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.SnapshotDescription;
+import org.apache.hadoop.hbase.protobuf.generated.ProcedureProtos.ProcedureState;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.regionserver.Region;
@@ -309,10 +321,38 @@ public class TestAccessController extends SecureTestUtil {
     // Verify all table/namespace permissions are erased
     assertEquals(0, AccessControlLists.getTablePermissions(conf, TEST_TABLE).size());
     assertEquals(
-      0,
-      AccessControlLists.getNamespacePermissions(conf,
-        TEST_TABLE.getNamespaceAsString()).size());
+        0,
+        AccessControlLists.getNamespacePermissions(conf,
+            TEST_TABLE.getNamespaceAsString()).size());
   }
+
+  @Test (timeout=180000)
+  public void testUnauthorizedShutdown() throws Exception {
+    AccessTestAction action = new AccessTestAction() {
+      @Override public Object run() throws Exception {
+        HMaster master = TEST_UTIL.getHBaseCluster().getMaster();
+        master.shutdown();
+        return null;
+      }
+    };
+    verifyDenied(action, USER_CREATE, USER_OWNER, USER_RW, USER_RO, USER_NONE, USER_GROUP_READ,
+        USER_GROUP_WRITE, USER_GROUP_CREATE);
+  }
+
+  @Test (timeout=180000)
+  public void testUnauthorizedStopMaster() throws Exception {
+    AccessTestAction action = new AccessTestAction() {
+      @Override public Object run() throws Exception {
+        HMaster master = TEST_UTIL.getHBaseCluster().getMaster();
+        master.stopMaster();
+        return null;
+      }
+    };
+
+    verifyDenied(action, USER_CREATE, USER_OWNER, USER_RW, USER_RO, USER_NONE, USER_GROUP_READ,
+        USER_GROUP_WRITE, USER_GROUP_CREATE);
+  }
+
 
   @Test
   public void testTableCreate() throws Exception {
@@ -482,7 +522,116 @@ public class TestAccessController extends SecureTestUtil {
     verifyDenied(enableTable, USER_RW, USER_RO, USER_NONE, USER_GROUP_READ, USER_GROUP_WRITE);
   }
 
+  public static class TestTableDDLProcedure extends Procedure<MasterProcedureEnv>
+  implements TableProcedureInterface {
+    private TableName tableName;
+
+    public TestTableDDLProcedure() {
+    }
+
+    public TestTableDDLProcedure(final MasterProcedureEnv env, final TableName tableName)
+        throws IOException {
+      this.tableName = tableName;
+      this.setTimeout(180000); // Timeout in 3 minutes
+      this.setOwner(env.getRequestUser().getUGI().getShortUserName());
+    }
+
+    @Override
+    public TableName getTableName() {
+      return tableName;
+    }
+
+    @Override
+    public TableOperationType getTableOperationType() {
+      return null;
+    }
+
+    @Override
+    protected boolean abort(MasterProcedureEnv env) {
+      return true;
+    }
+
+    @Override
+    protected void serializeStateData(OutputStream stream) throws IOException {
+      TestProcedureProtos.TestTableDDLStateData.Builder testTableDDLMsg =
+          TestProcedureProtos.TestTableDDLStateData.newBuilder()
+          .setTableName(tableName.getNameAsString());
+      testTableDDLMsg.build().writeDelimitedTo(stream);
+    }
+
+    @Override
+    protected void deserializeStateData(InputStream stream) throws IOException {
+      TestProcedureProtos.TestTableDDLStateData testTableDDLMsg =
+          TestProcedureProtos.TestTableDDLStateData.parseDelimitedFrom(stream);
+      tableName = TableName.valueOf(testTableDDLMsg.getTableName());
+    }
+
+    @Override
+    protected Procedure[] execute(MasterProcedureEnv env) {
+      // Not letting the procedure to complete until timed out
+      setState(ProcedureState.WAITING_TIMEOUT);
+      return null;
+    }
+
+    @Override
+    protected void rollback(MasterProcedureEnv env) {
+    }
+  }
+
   @Test
+  public void testAbortProcedure() throws Exception {
+    final TableName tableName = TableName.valueOf("testAbortProcedure");
+    final ProcedureExecutor<MasterProcedureEnv> procExec =
+        TEST_UTIL.getHBaseCluster().getMaster().getMasterProcedureExecutor();
+    Procedure proc = new TestTableDDLProcedure(procExec.getEnvironment(), tableName);
+    proc.setOwner(USER_OWNER.getShortName());
+    final long procId = procExec.submitProcedure(proc);
+
+    AccessTestAction abortProcedureAction = new AccessTestAction() {
+      @Override
+      public Object run() throws Exception {
+        ACCESS_CONTROLLER
+        .preAbortProcedure(ObserverContext.createAndPrepare(CP_ENV, null), procExec, procId);
+       return null;
+      }
+    };
+
+    verifyAllowed(abortProcedureAction, SUPERUSER, USER_ADMIN, USER_GROUP_ADMIN);
+    verifyAllowed(abortProcedureAction, USER_OWNER);
+    verifyDenied(
+      abortProcedureAction, USER_RW, USER_RO, USER_NONE, USER_GROUP_READ, USER_GROUP_WRITE);
+  }
+
+  @Test
+  public void testListProcedures() throws Exception {
+    final TableName tableName = TableName.valueOf("testAbortProcedure");
+    final ProcedureExecutor<MasterProcedureEnv> procExec =
+        TEST_UTIL.getHBaseCluster().getMaster().getMasterProcedureExecutor();
+    Procedure proc = new TestTableDDLProcedure(procExec.getEnvironment(), tableName);
+    proc.setOwner(USER_OWNER.getShortName());
+    final long procId = procExec.submitProcedure(proc);
+    final List<ProcedureInfo> procInfoList = procExec.listProcedures();
+
+    AccessTestAction listProceduresAction = new AccessTestAction() {
+      @Override
+      public Object run() throws Exception {
+        List<ProcedureInfo> procInfoListClone = new ArrayList<ProcedureInfo>(procInfoList.size());
+        for(ProcedureInfo pi : procInfoList) {
+          procInfoListClone.add(pi.clone());
+        }
+        ACCESS_CONTROLLER
+        .postListProcedures(ObserverContext.createAndPrepare(CP_ENV, null), procInfoListClone);
+       return null;
+      }
+    };
+
+    verifyAllowed(listProceduresAction, SUPERUSER, USER_ADMIN, USER_GROUP_ADMIN);
+    verifyAllowed(listProceduresAction, USER_OWNER);
+    verifyIfNull(
+      listProceduresAction, USER_RW, USER_RO, USER_NONE, USER_GROUP_READ, USER_GROUP_WRITE);
+  }
+
+  @Test (timeout=180000)
   public void testMove() throws Exception {
     List<HRegionLocation> regions;
     try (RegionLocator locator = systemUserConnection.getRegionLocator(TEST_TABLE)) {
@@ -1010,7 +1159,7 @@ public class TestAccessController extends SecureTestUtil {
           BlockingRpcChannel service = acl.coprocessorService(TEST_TABLE.getName());
           AccessControlService.BlockingInterface protocol =
             AccessControlService.newBlockingStub(service);
-          ProtobufUtil.grant(protocol, USER_RO.getShortName(), TEST_TABLE,
+          ProtobufUtil.grant(null, protocol, USER_RO.getShortName(), TEST_TABLE,
             TEST_FAMILY, null, Action.READ);
         }
         return null;
@@ -1025,7 +1174,7 @@ public class TestAccessController extends SecureTestUtil {
           BlockingRpcChannel service = acl.coprocessorService(TEST_TABLE.getName());
           AccessControlService.BlockingInterface protocol =
             AccessControlService.newBlockingStub(service);
-          ProtobufUtil.revoke(protocol, USER_RO.getShortName(), TEST_TABLE, TEST_FAMILY, null,
+          ProtobufUtil.revoke(null, protocol, USER_RO.getShortName(), TEST_TABLE, TEST_FAMILY, null,
             Action.READ);
         }
         return null;
@@ -1040,7 +1189,7 @@ public class TestAccessController extends SecureTestUtil {
           BlockingRpcChannel service = acl.coprocessorService(TEST_TABLE.getName());
           AccessControlService.BlockingInterface protocol =
             AccessControlService.newBlockingStub(service);
-          ProtobufUtil.getUserPermissions(protocol, TEST_TABLE);
+          ProtobufUtil.getUserPermissions(null, protocol, TEST_TABLE);
         }
         return null;
       }
@@ -1054,7 +1203,7 @@ public class TestAccessController extends SecureTestUtil {
           BlockingRpcChannel service = acl.coprocessorService(HConstants.EMPTY_START_ROW);
           AccessControlService.BlockingInterface protocol =
             AccessControlService.newBlockingStub(service);
-          ProtobufUtil.getUserPermissions(protocol);
+          ProtobufUtil.getUserPermissions(null, protocol);
         }
         return null;
       }
@@ -1460,7 +1609,7 @@ public class TestAccessController extends SecureTestUtil {
         BlockingRpcChannel service = acl.coprocessorService(tableName.getName());
         AccessControlService.BlockingInterface protocol =
             AccessControlService.newBlockingStub(service);
-        perms = ProtobufUtil.getUserPermissions(protocol, tableName);
+        perms = ProtobufUtil.getUserPermissions(null, protocol, tableName);
       } finally {
         acl.close();
       }
@@ -1487,7 +1636,7 @@ public class TestAccessController extends SecureTestUtil {
         BlockingRpcChannel service = acl.coprocessorService(tableName.getName());
         AccessControlService.BlockingInterface protocol =
             AccessControlService.newBlockingStub(service);
-        perms = ProtobufUtil.getUserPermissions(protocol, tableName);
+        perms = ProtobufUtil.getUserPermissions(null, protocol, tableName);
       } finally {
         acl.close();
       }
@@ -1511,7 +1660,7 @@ public class TestAccessController extends SecureTestUtil {
         BlockingRpcChannel service = acl.coprocessorService(tableName.getName());
         AccessControlService.BlockingInterface protocol =
             AccessControlService.newBlockingStub(service);
-        perms = ProtobufUtil.getUserPermissions(protocol, tableName);
+        perms = ProtobufUtil.getUserPermissions(null, protocol, tableName);
       } finally {
         acl.close();
       }
@@ -1531,7 +1680,7 @@ public class TestAccessController extends SecureTestUtil {
         BlockingRpcChannel service = acl.coprocessorService(tableName.getName());
         AccessControlService.BlockingInterface protocol =
             AccessControlService.newBlockingStub(service);
-        perms = ProtobufUtil.getUserPermissions(protocol, tableName);
+        perms = ProtobufUtil.getUserPermissions(null, protocol, tableName);
       } finally {
         acl.close();
       }
@@ -1551,7 +1700,7 @@ public class TestAccessController extends SecureTestUtil {
         BlockingRpcChannel service = acl.coprocessorService(tableName.getName());
         AccessControlService.BlockingInterface protocol =
             AccessControlService.newBlockingStub(service);
-        perms = ProtobufUtil.getUserPermissions(protocol, tableName);
+        perms = ProtobufUtil.getUserPermissions(null, protocol, tableName);
       } finally {
         acl.close();
       }
@@ -1574,7 +1723,7 @@ public class TestAccessController extends SecureTestUtil {
       BlockingRpcChannel service = acl.coprocessorService(HConstants.EMPTY_START_ROW);
       AccessControlService.BlockingInterface protocol =
         AccessControlService.newBlockingStub(service);
-      perms = ProtobufUtil.getUserPermissions(protocol);
+      perms = ProtobufUtil.getUserPermissions(null, protocol);
     } finally {
       acl.close();
     }
@@ -2393,15 +2542,41 @@ public class TestAccessController extends SecureTestUtil {
     NamespaceDescriptor desc = NamespaceDescriptor.create(namespace).build();
     createNamespace(TEST_UTIL, desc);
     grantOnNamespace(TEST_UTIL, USER_NONE.getShortName(), namespace, Permission.Action.READ);
+
+    // Test 1: A specific namespace
+    getNamespacePermissionsAndVerify(namespace, 1, namespace);
+
+    // Test 2: '@.*'
+    getNamespacePermissionsAndVerify(".*", 1, namespace);
+
+    // Test 3: A more complex regex
+    getNamespacePermissionsAndVerify("^test[a-zA-Z]*", 1, namespace);
+
+    deleteNamespace(TEST_UTIL, namespace);
+  }
+
+  /**
+   * List all user permissions match the given regular expression for namespace
+   * and verify each of them.
+   * @param namespaceRegexWithoutPrefix the regualar expression for namespace, without NAMESPACE_PREFIX
+   * @param expectedAmount the expected amount of user permissions returned
+   * @param expectedNamespace the expected namespace of each user permission returned
+   * @throws HBaseException in the case of any HBase exception when accessing hbase:acl table
+   */
+  private void getNamespacePermissionsAndVerify(String namespaceRegexWithoutPrefix,
+      int expectedAmount, String expectedNamespace) throws HBaseException {
     try {
       List<UserPermission> namespacePermissions = AccessControlClient.getUserPermissions(
-          systemUserConnection, AccessControlLists.toNamespaceEntry(namespace));
+        systemUserConnection, AccessControlLists.toNamespaceEntry(namespaceRegexWithoutPrefix));
       assertTrue(namespacePermissions != null);
-      assertTrue(namespacePermissions.size() == 1);
+      assertEquals(expectedAmount, namespacePermissions.size());
+      for (UserPermission namespacePermission : namespacePermissions) {
+        assertFalse(namespacePermission.isGlobal());  // Verify it is not a global user permission
+        assertEquals(expectedNamespace, namespacePermission.getNamespace());  // Verify namespace is set
+      }
     } catch (Throwable thw) {
       throw new HBaseException(thw);
     }
-    deleteNamespace(TEST_UTIL, namespace);
   }
 
   @Test
@@ -2612,5 +2787,80 @@ public class TestAccessController extends SecureTestUtil {
 
     verifyAllowed(setNamespaceQuotaAction, SUPERUSER, USER_ADMIN);
     verifyDenied(setNamespaceQuotaAction, USER_CREATE, USER_RW, USER_RO, USER_NONE, USER_OWNER);
+  }
+
+  @Test
+  public void testMoveServers() throws Exception {
+    AccessTestAction action1 = new AccessTestAction() {
+      @Override
+      public Object run() throws Exception {
+        ACCESS_CONTROLLER.preMoveServers(ObserverContext.createAndPrepare(CP_ENV, null),
+            null, null);
+        return null;
+      }
+    };
+
+    verifyAllowed(action1, SUPERUSER, USER_ADMIN);
+    verifyDenied(action1, USER_CREATE, USER_RW, USER_RO, USER_NONE, USER_OWNER);
+  }
+
+  @Test
+  public void testMoveTables() throws Exception {
+    AccessTestAction action1 = new AccessTestAction() {
+      @Override
+      public Object run() throws Exception {
+        ACCESS_CONTROLLER.preMoveTables(ObserverContext.createAndPrepare(CP_ENV, null),
+            null, null);
+        return null;
+      }
+    };
+
+    verifyAllowed(action1, SUPERUSER, USER_ADMIN);
+    verifyDenied(action1, USER_CREATE, USER_RW, USER_RO, USER_NONE, USER_OWNER);
+  }
+
+  @Test
+  public void testAddGroup() throws Exception {
+    AccessTestAction action1 = new AccessTestAction() {
+      @Override
+      public Object run() throws Exception {
+        ACCESS_CONTROLLER.preAddRSGroup(ObserverContext.createAndPrepare(CP_ENV, null),
+            null);
+        return null;
+      }
+    };
+
+    verifyAllowed(action1, SUPERUSER, USER_ADMIN);
+    verifyDenied(action1, USER_CREATE, USER_RW, USER_RO, USER_NONE, USER_OWNER);
+  }
+
+  @Test
+  public void testRemoveGroup() throws Exception {
+    AccessTestAction action1 = new AccessTestAction() {
+      @Override
+      public Object run() throws Exception {
+        ACCESS_CONTROLLER.preRemoveRSGroup(ObserverContext.createAndPrepare(CP_ENV, null),
+            null);
+        return null;
+      }
+    };
+
+    verifyAllowed(action1, SUPERUSER, USER_ADMIN);
+    verifyDenied(action1, USER_CREATE, USER_RW, USER_RO, USER_NONE, USER_OWNER);
+  }
+
+  @Test
+  public void testBalanceGroup() throws Exception {
+    AccessTestAction action1 = new AccessTestAction() {
+      @Override
+      public Object run() throws Exception {
+        ACCESS_CONTROLLER.preBalanceRSGroup(ObserverContext.createAndPrepare(CP_ENV, null),
+            null);
+        return null;
+      }
+    };
+
+    verifyAllowed(action1, SUPERUSER, USER_ADMIN);
+    verifyDenied(action1, USER_CREATE, USER_RW, USER_RO, USER_NONE, USER_OWNER);
   }
 }

@@ -89,6 +89,7 @@ import org.apache.hadoop.hbase.master.RegionStates;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionContext;
 import org.apache.hadoop.hbase.regionserver.compactions.NoLimitCompactionThroughputController;
+import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
@@ -947,7 +948,7 @@ public class TestSplitTransactionOnCluster {
       SplitTransactionImpl st = new SplitTransactionImpl(region, Bytes.toBytes("row2"));
       try {
         st.prepare();
-        st.createDaughters(regionServer, regionServer);
+        st.createDaughters(regionServer, regionServer, null);
       } catch (IOException e) {
 
       }
@@ -1324,7 +1325,7 @@ public class TestSplitTransactionOnCluster {
       assertNotNull(observer);
       observer.latch.await();
       observer.postSplit.await();
-      LOG.info("Waiting for region to come out of RIT");
+      LOG.info("Waiting for region to come out of RIT: " + actualRegion);
       TESTING_UTIL.waitFor(60000, 1000, new Waiter.Predicate<Exception>() {
         @Override
         public boolean evaluate() throws Exception {
@@ -1335,7 +1336,9 @@ public class TestSplitTransactionOnCluster {
       });
       regions = TESTING_UTIL.getHBaseAdmin().getTableRegions(tableName);
       assertTrue(regions.size() == 1);
-      assertTrue(admin.balancer());
+      RegionStates regionStates = cluster.getMaster().getAssignmentManager().getRegionStates();
+      Map<String, RegionState> rit = regionStates.getRegionsInTransition();
+      assertTrue(rit.size() == 0);
     } finally {
       table.close();
       connection.close();
@@ -1703,7 +1706,7 @@ public class TestSplitTransactionOnCluster {
         throws IOException {
       RegionCoprocessorEnvironment environment = ctx.getEnvironment();
       HRegionServer rs = (HRegionServer) environment.getRegionServerServices();
-      st.stepsAfterPONR(rs, rs, daughterRegions);
+      st.stepsAfterPONR(rs, rs, daughterRegions, null);
     }
 
   }

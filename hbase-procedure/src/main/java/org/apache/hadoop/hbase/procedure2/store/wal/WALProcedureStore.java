@@ -31,11 +31,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.Set;
 
+import org.apache.commons.collections.buffer.CircularFifoBuffer;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -102,9 +104,14 @@ public class WALProcedureStore implements ProcedureStore {
   private final CopyOnWriteArrayList<ProcedureStoreListener> listeners =
     new CopyOnWriteArrayList<ProcedureStoreListener>();
 
+  private static final String STORE_WAL_SYNC_STATS_COUNT =
+      "hbase.procedure.store.wal.sync.stats.count";
+  private static final int DEFAULT_SYNC_STATS_COUNT = 10;
+
   private final LinkedList<ProcedureWALFile> logs = new LinkedList<ProcedureWALFile>();
   private final ProcedureStoreTracker storeTracker = new ProcedureStoreTracker();
   private final AtomicBoolean running = new AtomicBoolean(false);
+
   private final ReentrantLock lock = new ReentrantLock();
   private final Condition waitCond = lock.newCondition();
   private final Condition slotCond = lock.newCondition();
@@ -113,14 +120,16 @@ public class WALProcedureStore implements ProcedureStore {
   private final LeaseRecovery leaseRecovery;
   private final Configuration conf;
   private final FileSystem fs;
-  private final Path logDir;
+  private final Path walDir;
 
-  private AtomicBoolean inSync = new AtomicBoolean(false);
-  private AtomicReference<Throwable> syncException = new AtomicReference<>();
+  private final AtomicReference<Throwable> syncException = new AtomicReference<Throwable>();
+  private final AtomicBoolean loading = new AtomicBoolean(true);
+  private final AtomicBoolean inSync = new AtomicBoolean(false);
+  private final AtomicLong totalSynced = new AtomicLong(0);
+  private final AtomicLong lastRollTs = new AtomicLong(0);
+
   private LinkedTransferQueue<ByteSlot> slotsCache = null;
   private Set<ProcedureWALFile> corruptedLogs = null;
-  private AtomicLong totalSynced = new AtomicLong(0);
-  private AtomicLong lastRollTs = new AtomicLong(0);
   private FSDataOutputStream stream = null;
   private long flushLogId = 0;
   private int slotIndex = 0;
@@ -136,11 +145,42 @@ public class WALProcedureStore implements ProcedureStore {
   private boolean useHsync;
   private int syncWaitMsec;
 
-  public WALProcedureStore(final Configuration conf, final FileSystem fs, final Path logDir,
+  // Variables used for UI display
+  private CircularFifoBuffer syncMetricsBuffer;
+
+  public static class SyncMetrics {
+    private long timestamp;
+    private long syncWaitMs;
+    private long totalSyncedBytes;
+    private int syncedEntries;
+    private float syncedPerSec;
+
+    public long getTimestamp() {
+      return timestamp;
+    }
+
+    public long getSyncWaitMs() {
+      return syncWaitMs;
+    }
+
+    public long getTotalSyncedBytes() {
+      return totalSyncedBytes;
+    }
+
+    public long getSyncedEntries() {
+      return syncedEntries;
+    }
+
+    public float getSyncedPerSec() {
+      return syncedPerSec;
+    }
+  }
+
+  public WALProcedureStore(final Configuration conf, final FileSystem fs, final Path walDir,
       final LeaseRecovery leaseRecovery) {
     this.fs = fs;
     this.conf = conf;
-    this.logDir = logDir;
+    this.walDir = walDir;
     this.leaseRecovery = leaseRecovery;
   }
 
@@ -151,6 +191,7 @@ public class WALProcedureStore implements ProcedureStore {
     }
 
     // Init buffer slots
+    loading.set(true);
     slots = new ByteSlot[numSlots];
     slotsCache = new LinkedTransferQueue();
     while (slotsCache.size() < numSlots) {
@@ -167,6 +208,10 @@ public class WALProcedureStore implements ProcedureStore {
     periodicRollMsec = conf.getInt(PERIODIC_ROLL_CONF_KEY, DEFAULT_PERIODIC_ROLL);
     syncWaitMsec = conf.getInt(SYNC_WAIT_MSEC_CONF_KEY, DEFAULT_SYNC_WAIT_MSEC);
     useHsync = conf.getBoolean(USE_HSYNC_CONF_KEY, DEFAULT_USE_HSYNC);
+
+    // WebUI
+    syncMetricsBuffer = new CircularFifoBuffer(
+      conf.getInt(STORE_WAL_SYNC_STATS_COUNT, DEFAULT_SYNC_STATS_COUNT));
 
     // Init sync thread
     syncThread = new Thread("WALProcedureStoreSyncThread") {
@@ -192,19 +237,16 @@ public class WALProcedureStore implements ProcedureStore {
     }
 
     LOG.info("Stopping the WAL Procedure Store");
-    if (lock.tryLock()) {
-      try {
-        waitCond.signalAll();
-        syncCond.signalAll();
-      } finally {
-        lock.unlock();
-      }
-    }
+    sendStopSignal();
 
     if (!abort) {
       try {
-        syncThread.join();
+        while (syncThread.isAlive()) {
+          sendStopSignal();
+          syncThread.join(250);
+        }
       } catch (InterruptedException e) {
+        LOG.warn("join interrupted", e);
         Thread.currentThread().interrupt();
       }
     }
@@ -221,6 +263,17 @@ public class WALProcedureStore implements ProcedureStore {
     logs.clear();
   }
 
+  private void sendStopSignal() {
+    if (lock.tryLock()) {
+      try {
+        waitCond.signalAll();
+        syncCond.signalAll();
+      } finally {
+        lock.unlock();
+      }
+    }
+  }
+
   @Override
   public boolean isRunning() {
     return running.get();
@@ -235,6 +288,19 @@ public class WALProcedureStore implements ProcedureStore {
     return storeTracker;
   }
 
+  public ArrayList<ProcedureWALFile> getActiveLogs() {
+    lock.lock();
+    try {
+      return new ArrayList<ProcedureWALFile>(logs);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  public Set<ProcedureWALFile> getCorruptedLogs() {
+    return corruptedLogs;
+  }
+
   @Override
   public void registerListener(ProcedureStoreListener listener) {
     this.listeners.add(listener);
@@ -247,32 +313,42 @@ public class WALProcedureStore implements ProcedureStore {
 
   @Override
   public void recoverLease() throws IOException {
-    LOG.info("Starting WAL Procedure Store lease recovery");
-    FileStatus[] oldLogs = getLogFiles();
-    while (running.get()) {
-      // Get Log-MaxID and recover lease on old logs
-      flushLogId = initOldLogs(oldLogs) + 1;
-
-      // Create new state-log
-      if (!rollWriter(flushLogId)) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Someone else has already created log: " + flushLogId);
+    lock.lock();
+    try {
+      LOG.info("Starting WAL Procedure Store lease recovery");
+      FileStatus[] oldLogs = getLogFiles();
+      while (isRunning()) {
+        // Get Log-MaxID and recover lease on old logs
+        try {
+          flushLogId = initOldLogs(oldLogs);
+        } catch (FileNotFoundException e) {
+          LOG.warn("someone else is active and deleted logs. retrying.", e);
+          oldLogs = getLogFiles();
+          continue;
         }
-        continue;
-      }
 
-      // We have the lease on the log
-      oldLogs = getLogFiles();
-      if (getMaxLogId(oldLogs) > flushLogId) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Someone else created new logs. Expected maxLogId < " + flushLogId);
+        // Create new state-log
+        if (!rollWriter(flushLogId + 1)) {
+          // someone else has already created this log
+          LOG.debug("someone else has already created log " + flushLogId);
+          continue;
         }
-        logs.getLast().removeFile();
-        continue;
-      }
 
-      LOG.info("Lease acquired for flushLogId: " + flushLogId);
-      break;
+        // We have the lease on the log
+        oldLogs = getLogFiles();
+        if (getMaxLogId(oldLogs) > flushLogId) {
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("Someone else created new logs. Expected maxLogId < " + flushLogId);
+          }
+          logs.getLast().removeFile();
+          continue;
+        }
+
+        LOG.info("Lease acquired for flushLogId: " + flushLogId);
+        break;
+      }
+    } finally {
+      lock.unlock();
     }
   }
 
@@ -287,20 +363,15 @@ public class WALProcedureStore implements ProcedureStore {
       if (LOG.isDebugEnabled()) {
         LOG.debug("No state logs to replay.");
       }
+      loading.set(false);
       return null;
     }
 
     // Load the old logs
-    final ArrayList<ProcedureWALFile> toRemove = new ArrayList<ProcedureWALFile>();
     Iterator<ProcedureWALFile> it = logs.descendingIterator();
     it.next(); // Skip the current log
     try {
       return ProcedureWALFormat.load(it, storeTracker, new ProcedureWALFormat.Loader() {
-        @Override
-        public void removeLog(ProcedureWALFile log) {
-          toRemove.add(log);
-        }
-
         @Override
         public void markCorruptedWAL(ProcedureWALFile log, IOException e) {
           if (corruptedLogs == null) {
@@ -311,11 +382,7 @@ public class WALProcedureStore implements ProcedureStore {
         }
       });
     } finally {
-      if (!toRemove.isEmpty()) {
-        for (ProcedureWALFile log: toRemove) {
-          removeLogFile(log);
-        }
-      }
+      loading.set(false);
     }
   }
 
@@ -326,18 +393,22 @@ public class WALProcedureStore implements ProcedureStore {
     }
 
     ByteSlot slot = acquireSlot();
-    long logId = -1;
     try {
       // Serialize the insert
+      long[] subProcIds = null;
       if (subprocs != null) {
         ProcedureWALFormat.writeInsert(slot, proc, subprocs);
+        subProcIds = new long[subprocs.length];
+        for (int i = 0; i < subprocs.length; ++i) {
+          subProcIds[i] = subprocs[i].getProcId();
+        }
       } else {
         assert !proc.hasParent();
         ProcedureWALFormat.writeInsert(slot, proc);
       }
 
       // Push the transaction data and wait until it is persisted
-      logId = pushData(slot);
+      pushData(PushType.INSERT, slot, proc.getProcId(), subProcIds);
     } catch (IOException e) {
       // We are not able to serialize the procedure.
       // this is a code error, and we are not able to go on.
@@ -346,14 +417,6 @@ public class WALProcedureStore implements ProcedureStore {
       throw new RuntimeException(e);
     } finally {
       releaseSlot(slot);
-    }
-
-    // Update the store tracker
-    synchronized (storeTracker) {
-      storeTracker.insert(proc, subprocs);
-      if (logId == flushLogId) {
-        checkAndTryRoll();
-      }
     }
   }
 
@@ -364,13 +427,12 @@ public class WALProcedureStore implements ProcedureStore {
     }
 
     ByteSlot slot = acquireSlot();
-    long logId = -1;
     try {
       // Serialize the update
       ProcedureWALFormat.writeUpdate(slot, proc);
 
       // Push the transaction data and wait until it is persisted
-      logId = pushData(slot);
+      pushData(PushType.UPDATE, slot, proc.getProcId(), null);
     } catch (IOException e) {
       // We are not able to serialize the procedure.
       // this is a code error, and we are not able to go on.
@@ -378,20 +440,6 @@ public class WALProcedureStore implements ProcedureStore {
       throw new RuntimeException(e);
     } finally {
       releaseSlot(slot);
-    }
-
-    // Update the store tracker
-    boolean removeOldLogs = false;
-    synchronized (storeTracker) {
-      storeTracker.update(proc);
-      if (logId == flushLogId) {
-        removeOldLogs = storeTracker.isUpdated();
-        checkAndTryRoll();
-      }
-    }
-
-    if (removeOldLogs) {
-      removeAllLogs(logId - 1);
     }
   }
 
@@ -402,13 +450,12 @@ public class WALProcedureStore implements ProcedureStore {
     }
 
     ByteSlot slot = acquireSlot();
-    long logId = -1;
     try {
       // Serialize the delete
       ProcedureWALFormat.writeDelete(slot, procId);
 
       // Push the transaction data and wait until it is persisted
-      logId = pushData(slot);
+      pushData(PushType.DELETE, slot, procId, null);
     } catch (IOException e) {
       // We are not able to serialize the procedure.
       // this is a code error, and we are not able to go on.
@@ -416,22 +463,6 @@ public class WALProcedureStore implements ProcedureStore {
       throw new RuntimeException(e);
     } finally {
       releaseSlot(slot);
-    }
-
-    boolean removeOldLogs = false;
-    synchronized (storeTracker) {
-      storeTracker.delete(procId);
-      if (logId == flushLogId) {
-        if (storeTracker.isEmpty() || storeTracker.isUpdated()) {
-          removeOldLogs = checkAndTryRoll();
-        } else {
-          checkAndTryRoll();
-        }
-      }
-    }
-
-    if (removeOldLogs) {
-      removeAllLogs(logId);
     }
   }
 
@@ -445,7 +476,10 @@ public class WALProcedureStore implements ProcedureStore {
     slotsCache.offer(slot);
   }
 
-  private long pushData(final ByteSlot slot) {
+  private enum PushType { INSERT, UPDATE, DELETE };
+
+  private long pushData(final PushType type, final ByteSlot slot,
+      final long procId, final long[] subProcIds) {
     if (!isRunning()) {
       throw new RuntimeException("the store must be running before inserting data");
     }
@@ -472,6 +506,7 @@ public class WALProcedureStore implements ProcedureStore {
         }
       }
 
+      updateStoreTracker(type, procId, subProcIds);
       slots[slotIndex++] = slot;
       logId = flushLogId;
 
@@ -500,11 +535,33 @@ public class WALProcedureStore implements ProcedureStore {
     return logId;
   }
 
+  private void updateStoreTracker(final PushType type,
+      final long procId, final long[] subProcIds) {
+    switch (type) {
+      case INSERT:
+        if (subProcIds == null) {
+          storeTracker.insert(procId);
+        } else {
+          storeTracker.insert(procId, subProcIds);
+        }
+        break;
+      case UPDATE:
+        storeTracker.update(procId);
+        break;
+      case DELETE:
+        storeTracker.delete(procId);
+        break;
+      default:
+        throw new RuntimeException("invalid push type " + type);
+    }
+  }
+
   private boolean isSyncAborted() {
     return syncException.get() != null;
   }
 
   private void syncLoop() throws Throwable {
+    long totalSyncedToStore = 0;
     inSync.set(false);
     lock.lock();
     try {
@@ -512,6 +569,10 @@ public class WALProcedureStore implements ProcedureStore {
         try {
           // Wait until new data is available
           if (slotIndex == 0) {
+            if (!loading.get()) {
+              periodicRoll();
+            }
+
             if (LOG.isTraceEnabled()) {
               float rollTsSec = getMillisFromLastRoll() / 1000.0f;
               LOG.trace(String.format("Waiting for data. flushed=%s (%s/sec)",
@@ -521,29 +582,41 @@ public class WALProcedureStore implements ProcedureStore {
 
             waitCond.await(getMillisToNextPeriodicRoll(), TimeUnit.MILLISECONDS);
             if (slotIndex == 0) {
-              // no data.. probably a stop()
-              checkAndTryRoll();
+              // no data.. probably a stop() or a periodic roll
               continue;
             }
           }
-
           // Wait SYNC_WAIT_MSEC or the signal of "slots full" before flushing
-          long syncWaitSt = System.currentTimeMillis();
+          final long syncWaitSt = System.currentTimeMillis();
           if (slotIndex != slots.length) {
             slotCond.await(syncWaitMsec, TimeUnit.MILLISECONDS);
           }
-          long syncWaitMs = System.currentTimeMillis() - syncWaitSt;
+
+          final long currentTs = System.currentTimeMillis();
+          final long syncWaitMs = currentTs - syncWaitSt;
+          final float rollSec = getMillisFromLastRoll() / 1000.0f;
+          final float syncedPerSec = totalSyncedToStore / rollSec;
           if (LOG.isTraceEnabled() && (syncWaitMs > 10 || slotIndex < slots.length)) {
-            float rollSec = getMillisFromLastRoll() / 1000.0f;
-            LOG.trace(String.format("Sync wait %s, slotIndex=%s , totalSynced=%s/sec",
+            LOG.trace(String.format("Sync wait %s, slotIndex=%s , totalSynced=%s (%s/sec)",
                       StringUtils.humanTimeDiff(syncWaitMs), slotIndex,
-                      StringUtils.humanSize(totalSynced.get()),
-                      StringUtils.humanSize(totalSynced.get() / rollSec)));
+                      StringUtils.humanSize(totalSyncedToStore),
+                      StringUtils.humanSize(syncedPerSec)));
           }
 
+          // update webui circular buffers (TODO: get rid of allocations)
+          final SyncMetrics syncMetrics = new SyncMetrics();
+          syncMetrics.timestamp = currentTs;
+          syncMetrics.syncWaitMs = syncWaitMs;
+          syncMetrics.syncedEntries = slotIndex;
+          syncMetrics.totalSyncedBytes = totalSyncedToStore;
+          syncMetrics.syncedPerSec = syncedPerSec;
+          syncMetricsBuffer.add(syncMetrics);
 
+          // sync
           inSync.set(true);
-          totalSynced.addAndGet(syncSlots());
+          long slotSize = syncSlots();
+          logs.getLast().addToSize(slotSize);
+          totalSyncedToStore = totalSynced.addAndGet(slotSize);
           slotIndex = 0;
           inSync.set(false);
         } catch (InterruptedException e) {
@@ -563,6 +636,15 @@ public class WALProcedureStore implements ProcedureStore {
     }
   }
 
+  public ArrayList<SyncMetrics> getSyncMetrics() {
+    lock.lock();
+    try {
+      return new ArrayList<SyncMetrics>(syncMetricsBuffer);
+    } finally {
+      lock.unlock();
+    }
+  }
+
   private long syncSlots() throws Throwable {
     int retry = 0;
     int logRolled = 0;
@@ -572,6 +654,7 @@ public class WALProcedureStore implements ProcedureStore {
         totalSynced = syncSlots(stream, slots, 0, slotIndex);
         break;
       } catch (Throwable e) {
+        LOG.warn("unable to sync slots, retry=" + retry);
         if (++retry >= maxRetriesBeforeRoll) {
           if (logRolled >= maxSyncFailureRoll) {
             LOG.error("Sync slots after log roll failed, abort.", e);
@@ -630,16 +713,16 @@ public class WALProcedureStore implements ProcedureStore {
     }
   }
 
-  @VisibleForTesting
-  public boolean rollWriterOrDie() {
-    for (int i = 1; i <= rollRetries; ++i) {
+  private boolean rollWriterOrDie() {
+    for (int i = 0; i < rollRetries; ++i) {
+      if (i > 0) Threads.sleepWithoutInterrupt(waitBeforeRoll * i);
+
       try {
         if (rollWriter()) {
           return true;
         }
       } catch (IOException e) {
-        LOG.warn("Unable to roll the log, attempt=" + i, e);
-        Threads.sleepWithoutInterrupt(waitBeforeRoll);
+        LOG.warn("Unable to roll the log, attempt=" + (i + 1), e);
       }
     }
     LOG.fatal("Unable to roll the log");
@@ -647,31 +730,72 @@ public class WALProcedureStore implements ProcedureStore {
     throw new RuntimeException("unable to roll the log");
   }
 
-  protected boolean checkAndTryRoll() {
-    if (!isRunning()) return false;
-
-    if (totalSynced.get() > rollThreshold || getMillisToNextPeriodicRoll() <= 0) {
-      try {
-        return rollWriter();
-      } catch (IOException e) {
-        LOG.warn("Unable to roll the log", e);
-      }
+  private boolean tryRollWriter() {
+    try {
+      return rollWriter();
+    } catch (IOException e) {
+      LOG.warn("Unable to roll the log", e);
+      return false;
     }
-    return false;
   }
 
-  private long getMillisToNextPeriodicRoll() {
+  public long getMillisToNextPeriodicRoll() {
     if (lastRollTs.get() > 0 && periodicRollMsec > 0) {
       return periodicRollMsec - getMillisFromLastRoll();
     }
     return Long.MAX_VALUE;
   }
 
-  private long getMillisFromLastRoll() {
+  public long getMillisFromLastRoll() {
     return (System.currentTimeMillis() - lastRollTs.get());
   }
 
-  protected boolean rollWriter() throws IOException {
+  @VisibleForTesting
+  protected void periodicRollForTesting() throws IOException {
+    lock.lock();
+    try {
+      periodicRoll();
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  @VisibleForTesting
+  protected boolean rollWriterForTesting() throws IOException {
+    lock.lock();
+    try {
+      return rollWriter();
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  private void periodicRoll() throws IOException {
+    if (storeTracker.isEmpty()) {
+      if (LOG.isTraceEnabled()) {
+        LOG.trace("no active procedures");
+      }
+      tryRollWriter();
+      removeAllLogs(flushLogId - 1);
+    } else {
+      if (storeTracker.isUpdated()) {
+        if (LOG.isTraceEnabled()) {
+          LOG.trace("all the active procedures are in the latest log");
+        }
+        removeAllLogs(flushLogId - 1);
+      }
+
+      // if the log size has exceeded the roll threshold
+      // or the periodic roll timeout is expired, try to roll the wal.
+      if (totalSynced.get() > rollThreshold || getMillisToNextPeriodicRoll() <= 0) {
+        tryRollWriter();
+      }
+
+      removeInactiveLogs();
+    }
+  }
+
+  private boolean rollWriter() throws IOException {
     // Create new state-log
     if (!rollWriter(flushLogId + 1)) {
       LOG.warn("someone else has already created log " + flushLogId);
@@ -691,6 +815,9 @@ public class WALProcedureStore implements ProcedureStore {
   }
 
   private boolean rollWriter(final long logId) throws IOException {
+    assert logId > flushLogId : "logId=" + logId + " flushLogId=" + flushLogId;
+    assert lock.isHeldByCurrentThread() : "expected to be the lock owner. " + lock.isLocked();
+
     ProcedureWALHeader header = ProcedureWALHeader.newBuilder()
       .setVersion(ProcedureWALFormat.HEADER_VERSION)
       .setType(ProcedureWALFormat.LOG_TYPE_STREAM)
@@ -719,20 +846,17 @@ public class WALProcedureStore implements ProcedureStore {
       newStream.close();
       return false;
     }
-    lock.lock();
-    try {
-      closeStream();
-      synchronized (storeTracker) {
-        storeTracker.resetUpdates();
-      }
-      stream = newStream;
-      flushLogId = logId;
-      totalSynced.set(0);
-      lastRollTs.set(System.currentTimeMillis());
-      logs.add(new ProcedureWALFile(fs, newLogFile, header, startPos));
-    } finally {
-      lock.unlock();
-    }
+
+    closeStream();
+
+    storeTracker.resetUpdates();
+    stream = newStream;
+    flushLogId = logId;
+    totalSynced.set(0);
+    long rollTs = System.currentTimeMillis();
+    lastRollTs.set(rollTs);
+    logs.add(new ProcedureWALFile(fs, newLogFile, header, startPos, rollTs));
+
     if (LOG.isDebugEnabled()) {
       LOG.debug("Roll new state log: " + logId);
     }
@@ -743,7 +867,10 @@ public class WALProcedureStore implements ProcedureStore {
     try {
       if (stream != null) {
         try {
-          ProcedureWALFormat.writeTrailer(stream, storeTracker);
+          ProcedureWALFile log = logs.getLast();
+          log.setProcIds(storeTracker.getUpdatedMinProcId(), storeTracker.getUpdatedMaxProcId());
+          long trailerSize = ProcedureWALFormat.writeTrailer(stream, storeTracker);
+          log.addToSize(trailerSize);
         } catch (IOException e) {
           LOG.warn("Unable to write the trailer: " + e.getMessage());
         }
@@ -756,21 +883,33 @@ public class WALProcedureStore implements ProcedureStore {
     }
   }
 
-  private void removeAllLogs(long lastLogId) {
-    if (logs.size() <= 1) {
-      assert logs.size() == 1: "Expected at least one active log to be running.";
-      return;
+  // ==========================================================================
+  //  Log Files cleaner helpers
+  // ==========================================================================
+  private void removeInactiveLogs() {
+    // Verify if the ProcId of the first oldest is still active. if not remove the file.
+    while (logs.size() > 1) {
+      ProcedureWALFile log = logs.getFirst();
+      if (storeTracker.isTracking(log.getMinProcId(), log.getMaxProcId())) {
+        break;
+      }
+      removeLogFile(log);
     }
+  }
+
+  private void removeAllLogs(long lastLogId) {
+    if (logs.size() <= 1) return;
+
     if (LOG.isDebugEnabled()) {
       LOG.debug("Remove all state logs with ID less than " + lastLogId);
     }
-    do {
+    while (logs.size() > 1) {
       ProcedureWALFile log = logs.getFirst();
       if (lastLogId < log.getLogId()) {
         break;
       }
       removeLogFile(log);
-    } while(!logs.isEmpty());
+    }
   }
 
   private boolean removeLogFile(final ProcedureWALFile log) {
@@ -780,6 +919,10 @@ public class WALProcedureStore implements ProcedureStore {
       }
       log.removeFile();
       logs.remove(log);
+      LOG.info("Remove log: " + log);
+      LOG.info("Removed logs: " + logs);
+      if (logs.size() == 0) { LOG.error("Expected at least one log"); }
+      assert logs.size() > 0 : "expected at least one log";
     } catch (IOException e) {
       LOG.error("Unable to remove log: " + log, e);
       return false;
@@ -787,15 +930,11 @@ public class WALProcedureStore implements ProcedureStore {
     return true;
   }
 
-  public Set<ProcedureWALFile> getCorruptedLogs() {
-    return corruptedLogs;
-  }
-
   // ==========================================================================
   //  FileSystem Log Files helpers
   // ==========================================================================
-  public Path getLogDir() {
-    return this.logDir;
+  public Path getWALDir() {
+    return this.walDir;
   }
 
   public FileSystem getFileSystem() {
@@ -803,7 +942,7 @@ public class WALProcedureStore implements ProcedureStore {
   }
 
   protected Path getLogFilePath(final long logId) throws IOException {
-    return new Path(logDir, String.format("state-%020d.log", logId));
+    return new Path(walDir, String.format("state-%020d.log", logId));
   }
 
   private static long getLogIdFromName(final String name) {
@@ -817,22 +956,36 @@ public class WALProcedureStore implements ProcedureStore {
     return Long.parseLong(name.substring(start, end));
   }
 
+  private static final PathFilter WALS_PATH_FILTER = new PathFilter() {
+    @Override
+    public boolean accept(Path path) {
+      String name = path.getName();
+      return name.startsWith("state-") && name.endsWith(".log");
+    }
+  };
+
+  private static final Comparator<FileStatus> FILE_STATUS_ID_COMPARATOR =
+      new Comparator<FileStatus>() {
+    @Override
+    public int compare(FileStatus a, FileStatus b) {
+      final long aId = getLogIdFromName(a.getPath().getName());
+      final long bId = getLogIdFromName(b.getPath().getName());
+      return Long.compare(aId, bId);
+    }
+  };
+
   private FileStatus[] getLogFiles() throws IOException {
     try {
-      return fs.listStatus(logDir, new PathFilter() {
-        @Override
-        public boolean accept(Path path) {
-          String name = path.getName();
-          return name.startsWith("state-") && name.endsWith(".log");
-        }
-      });
+      FileStatus[] files = fs.listStatus(walDir, WALS_PATH_FILTER);
+      Arrays.sort(files, FILE_STATUS_ID_COMPARATOR);
+      return files;
     } catch (FileNotFoundException e) {
       LOG.warn("Log directory not found: " + e.getMessage());
       return null;
     }
   }
 
-  private long getMaxLogId(final FileStatus[] logFiles) {
+  private static long getMaxLogId(final FileStatus[] logFiles) {
     long maxLogId = 0;
     if (logFiles != null && logFiles.length > 0) {
       for (int i = 0; i < logFiles.length; ++i) {
@@ -875,7 +1028,7 @@ public class WALProcedureStore implements ProcedureStore {
       } catch (IOException e) {
         LOG.warn("Unable to read tracker for " + log + " - " + e.getMessage());
         // try the next one...
-        storeTracker.clear();
+        storeTracker.reset();
         storeTracker.setPartialFlag(true);
       }
     }

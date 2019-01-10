@@ -20,11 +20,10 @@ package org.apache.hadoop.hbase.regionserver.wal;
 
 import java.io.IOException;
 
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HTableDescriptor;
-
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.wal.WALKey;
 
 /**
@@ -82,28 +81,31 @@ public interface WALActionsListener {
   */
   void visitLogEntryBeforeWrite(
     HRegionInfo info, WALKey logKey, WALEdit logEdit
-  );
+  ) throws IOException;
 
   /**
-   *
    * @param htd
    * @param logKey
-   * @param logEdit
-   * TODO: Retire this in favor of {@link #visitLogEntryBeforeWrite(HRegionInfo, WALKey, WALEdit)}
-   * It only exists to get scope when replicating.  Scope should be in the WALKey and not need
-   * us passing in a <code>htd</code>.
+   * @param logEdit TODO: Retire this in favor of
+   *          {@link #visitLogEntryBeforeWrite(HRegionInfo, WALKey, WALEdit)} It only exists to get
+   *          scope when replicating. Scope should be in the WALKey and not need us passing in a
+   *          <code>htd</code>.
+   * @throws IOException If failed to parse the WALEdit
    */
-  void visitLogEntryBeforeWrite(
-    HTableDescriptor htd, WALKey logKey, WALEdit logEdit
-  );
+  void visitLogEntryBeforeWrite(HTableDescriptor htd, WALKey logKey, WALEdit logEdit)
+      throws IOException;
 
   /**
    * For notification post append to the writer.  Used by metrics system at least.
    * TODO: Combine this with above.
    * @param entryLen approx length of cells in this append.
    * @param elapsedTimeMillis elapsed time in milliseconds.
+   * @param logKey A WAL key
+   * @param logEdit A WAL edit containing list of cells.
+   * @throws IOException if any network or I/O occurred
    */
-  void postAppend(final long entryLen, final long elapsedTimeMillis);
+  void postAppend(final long entryLen, final long elapsedTimeMillis, final WALKey logKey,
+      final WALEdit logEdit) throws IOException;
 
   /**
    * For notification post writer sync.  Used by metrics system at least.
@@ -133,13 +135,17 @@ public interface WALActionsListener {
     public void logCloseRequested() {}
 
     @Override
-    public void visitLogEntryBeforeWrite(HRegionInfo info, WALKey logKey, WALEdit logEdit) {}
+    public void visitLogEntryBeforeWrite(HRegionInfo info, WALKey logKey, WALEdit logEdit) throws IOException {}
 
     @Override
-    public void visitLogEntryBeforeWrite(HTableDescriptor htd, WALKey logKey, WALEdit logEdit) {}
+    public void visitLogEntryBeforeWrite(HTableDescriptor htd, WALKey logKey, WALEdit logEdit)
+        throws IOException {
+    }
 
     @Override
-    public void postAppend(final long entryLen, final long elapsedTimeMillis) {}
+    public void postAppend(final long entryLen, final long elapsedTimeMillis, final WALKey logKey,
+        final WALEdit logEdit) throws IOException {
+    }
 
     @Override
     public void postSync(final long timeInNanos, final int handlerSyncs) {}

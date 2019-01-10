@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://maven.apache.org/POM/4.0.0" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
   <!--
 /**
  * Licensed to the Apache Software Foundation (ASF) under one
@@ -33,16 +33,16 @@
     <groupId>org.apache</groupId>
     <artifactId>apache</artifactId>
     <version>12</version>
-    <relativePath/>
+    <relativePath />
     <!-- no parent resolution -->
   </parent>
   <groupId>org.apache.hbase</groupId>
   <artifactId>hbase</artifactId>
   <packaging>pom</packaging>
-  <version>1.1.2</version>
+  <version>1.1.2.2.6.2.69-1</version>
   <name>Apache HBase</name>
   <description>
-    Apache HBase is the Hadoop database. Use it when you need
+    Apache HBase&#153; is the Hadoop database. Use it when you need
     random, realtime read/write access to your Big Data.
     This project's goal is the hosting of very large tables -- billions of rows X millions of columns -- atop clusters
     of commodity hardware.
@@ -68,6 +68,7 @@
     <module>hbase-annotations</module>
     <module>hbase-checkstyle</module>
     <module>hbase-shaded</module>
+    <module>hbase-spark</module>
   </modules>
   <!--Add apache snapshots in case we want to use unreleased versions of plugins:
       e.g. surefire 2.18-SNAPSHOT-->
@@ -75,6 +76,10 @@
     <pluginRepository>
       <id>apache.snapshots</id>
       <url>http://repository.apache.org/snapshots/</url>
+    </pluginRepository>
+    <pluginRepository>
+      <id>hwx</id>
+      <url>http://nexus-private.hortonworks.com/nexus/content/groups/public/</url>
     </pluginRepository>
   </pluginRepositories>
   <scm>
@@ -438,15 +443,9 @@
       </snapshots>
     </repository>
     <repository>
-      <id>ghelmling.testing</id>
-      <name>Gary Helmling test repo</name>
-      <url>http://people.apache.org/~garyh/mvn/</url>
-      <snapshots>
-        <enabled>true</enabled>
-      </snapshots>
-      <releases>
-        <enabled>true</enabled>
-      </releases>
+      <id>public</id>
+      <name>hwx</name>
+      <url>http://nexus-private.hortonworks.com/nexus/content/groups/public/</url>
     </repository>
   </repositories>
   <build>
@@ -599,6 +598,11 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-source-plugin</artifactId>
+          <version>${maven-source-plugin.version}</version>
+         </plugin>
+        <!--plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-source-plugin</artifactId>
           <executions>
             <execution>
               <id>attach-sources</id>
@@ -608,7 +612,7 @@
               </goals>
             </execution>
           </executions>
-        </plugin>
+        </plugin-->
         <!-- General configuration for submodules who want to build a test jar -->
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
@@ -666,7 +670,7 @@
                     </goals>
                   </pluginExecutionFilter>
                   <action>
-                    <ignore></ignore>
+                    <ignore />
                   </action>
                 </pluginExecution>
                 <pluginExecution>
@@ -800,6 +804,20 @@
       </plugins>
     </pluginManagement>
     <plugins>
+     <plugin>
+	<groupId>org.apache.maven.plugins</groupId>
+    	<artifactId>maven-source-plugin</artifactId>
+    	<executions>
+    	<execution>
+            <id>attach-sources</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>jar-no-fork</goal>
+              <goal>test-jar-no-fork</goal>
+            </goals>
+        </execution>
+    	</executions>
+      </plugin> 
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
@@ -1019,7 +1037,7 @@
           <dependency>
             <groupId>org.asciidoctor</groupId>
             <artifactId>asciidoctorj-pdf</artifactId>
-            <version>1.5.0-alpha.6</version>
+            <version>1.5.0-alpha.11</version>
           </dependency>
         </dependencies>
         <configuration>
@@ -1029,6 +1047,8 @@
           <sourceHighlighter>coderay</sourceHighlighter>
           <attributes>
             <docVersion>${project.version}</docVersion>
+            <sourcedir>${project.build.sourceDirectory}</sourcedir>
+            <pdfmarks />
           </attributes>
         </configuration>
         <executions>
@@ -1054,9 +1074,9 @@
             <configuration>
               <backend>pdf</backend>
               <attributes>
-                <pagenums/>
-                <toc/>
-                <idprefix/>
+                <pagenums />
+                <toc />
+                <idprefix />
                 <idseparator>-</idseparator>
               </attributes>
             </configuration>
@@ -1133,6 +1153,11 @@
         <inherited>true</inherited>
         <extensions>true</extensions>
       </plugin>
+      <plugin>
+        <groupId>org.scala-tools</groupId>
+        <artifactId>maven-scala-plugin</artifactId>
+        <version>2.15.2</version>
+      </plugin>
     </plugins>
   </build>
   <properties>
@@ -1157,10 +1182,17 @@
     <maven.min.version>3.0.3</maven.min.version>
     <java.min.version>${compileSource}</java.min.version>
     <!-- Dependencies -->
-    <hadoop-two.version>2.5.1</hadoop-two.version>
+    <hadoop-two.version>2.7.3.2.6.2.69-1</hadoop-two.version>
     <!-- minikdc introduced in hadoop-2.3; override when building earlier versions -->
     <hadoop-two-minikdc.version>${hadoop-two.version}</hadoop-two-minikdc.version>
     <hadoop-three.version>3.0.0-SNAPSHOT</hadoop-three.version>
+    <!-- These must be defined here for downstream build tools that don't look at profiles.
+         They ought to match the values found in our default hadoop profile, which is
+         currently "hadoop-2.0". See HBASE-15925 for more info. -->
+    <hadoop.version>${hadoop-two.version}</hadoop.version>
+    <compat.module>hbase-hadoop2-compat</compat.module>
+    <assembly.file>src/main/assembly/hadoop-two-compat.xml</assembly.file>
+    <!-- end HBASE-15925 default hadoop compatibility values -->
     <commons-cli.version>1.2</commons-cli.version>
     <commons-codec.version>1.9</commons-codec.version>
     <!-- pretty outdated -->
@@ -1170,45 +1202,48 @@
     <commons-math.version>2.2</commons-math.version>
     <commons-net.version>3.1</commons-net.version>
     <disruptor.version>3.3.0</disruptor.version>
-    <collections.version>3.2.1</collections.version>
-    <httpclient.version>3.1</httpclient.version>
+    <!-- Do not use versions earlier than 3.2.2 due to a security vulnerability -->
+    <collections.version>3.2.2</collections.version>
+    <httpclient.version>4.5.2</httpclient.version>
+    <httpcore.version>4.4.4</httpcore.version>
     <metrics-core.version>2.2.0</metrics-core.version>
     <guava.version>12.0.1</guava.version>
     <jsr305.version>1.3.9</jsr305.version>
     <jackson.version>1.9.13</jackson.version>
     <jasper.version>5.5.23</jasper.version>
     <jaxb-api.version>2.2.2</jaxb-api.version>
-    <jetty.version>6.1.26</jetty.version>
+    <jetty.version>6.1.26.hwx</jetty.version>
     <jetty.jspapi.version>6.1.14</jetty.jspapi.version>
     <jersey.version>1.9</jersey.version>
     <jmock-junit4.version>2.6.0</jmock-junit4.version>
     <jruby.version>1.6.8</jruby.version>
-    <junit.version>4.11</junit.version>
+    <junit.version>4.12</junit.version>
     <hamcrest.version>1.3</hamcrest.version>
     <htrace.version>3.1.0-incubating</htrace.version>
     <log4j.version>1.2.17</log4j.version>
     <mockito-all.version>1.10.8</mockito-all.version>
     <protobuf.version>2.5.0</protobuf.version>
     <thrift.path>thrift</thrift.path>
-    <thrift.version>0.9.0</thrift.version>
-    <zookeeper.version>3.4.6</zookeeper.version>
+    <thrift.version>0.9.3</thrift.version>
+    <zookeeper.version>3.4.6.2.6.2.69-1</zookeeper.version>
     <slf4j.version>1.7.7</slf4j.version>
     <hadoop-snappy.version>0.0.1-SNAPSHOT</hadoop-snappy.version>
     <clover.version>4.0.3</clover.version>
-    <jamon-runtime.version>2.3.1</jamon-runtime.version>
+    <jamon-runtime.version>2.4.1</jamon-runtime.version>
     <jettison.version>1.3.3</jettison.version>
     <netty.version>4.0.23.Final</netty.version>
     <joni.version>2.1.2</joni.version>
     <jcodings.version>1.0.8</jcodings.version>
     <spy.version>2.11.6</spy.version>
     <bouncycastle.version>1.46</bouncycastle.version>
+    <kerby.version>1.0.0-RC2</kerby.version>
     <!-- Plugin Dependencies -->
     <maven.assembly.version>2.4</maven.assembly.version>
     <maven.antrun.version>1.6</maven.antrun.version>
-    <jamon.plugin.version>2.3.4</jamon.plugin.version>
+    <jamon.plugin.version>2.4.1</jamon.plugin.version>
     <findbugs-annotations>1.3.9-1</findbugs-annotations>
     <javadoc.version>2.9</javadoc.version>
-    <asciidoctor.plugin.version>1.5.2.1</asciidoctor.plugin.version>
+    <asciidoctor.plugin.version>1.5.5</asciidoctor.plugin.version>
     <!-- General Packaging -->
     <package.prefix>/usr</package.prefix>
     <package.conf.dir>/etc/hbase</package.conf.dir>
@@ -1225,6 +1260,7 @@
     <it.test.jar>hbase-it-${project.version}-tests.jar</it.test.jar>
     <annotations.test.jar>hbase-annotations-${project.version}-tests.jar</annotations.test.jar>
     <surefire.version>2.18</surefire.version>
+    <rsgroup.test.jar>hbase-rsgroup-${project.version}-tests.jar</rsgroup.test.jar>
     <surefire.provider>surefire-junit47</surefire.provider>
     <!-- default: run small & medium, medium with 2 threads -->
     <surefire.skipFirstPart>false</surefire.skipFirstPart>
@@ -1235,8 +1271,8 @@
     <surefire.secondPartGroups>org.apache.hadoop.hbase.testclassification.MediumTests</surefire.secondPartGroups>
     <surefire.testFailureIgnore>false</surefire.testFailureIgnore>
     <test.output.tofile>true</test.output.tofile>
-    <surefire.timeout>900</surefire.timeout>
-    <test.exclude.pattern></test.exclude.pattern>
+    <surefire.timeout>7200</surefire.timeout>
+    <test.exclude.pattern />
     <!-- default Xmx value is 2800m. Use -Dsurefire.Xmx=xxg to run tests with different JVM Xmx value -->
     <surefire.Xmx>2800m</surefire.Xmx>
     <surefire.cygwinXmx>2800m</surefire.cygwinXmx>
@@ -1251,6 +1287,7 @@
     <hbase.skip-jacoco>true</hbase.skip-jacoco>
     <jacoco.version>0.6.2.201302030002</jacoco.version>
     <extra.enforcer.version>1.0-beta-3</extra.enforcer.version>
+    <maven-source-plugin.version>2.4</maven-source-plugin.version>
   </properties>
   <!-- Sorted by groups of dependencies then groupId and artifactId -->
   <dependencyManagement>
@@ -1323,6 +1360,18 @@
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>${compat.module}</artifactId>
+        <version>${project.version}</version>
+        <type>test-jar</type>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <artifactId>hbase-rsgroup</artifactId>
+        <groupId>org.apache.hbase</groupId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <artifactId>hbase-rsgroup</artifactId>
+        <groupId>org.apache.hbase</groupId>
         <version>${project.version}</version>
         <type>test-jar</type>
         <scope>test</scope>
@@ -1445,9 +1494,14 @@
         <version>${collections.version}</version>
       </dependency>
       <dependency>
-        <groupId>commons-httpclient</groupId>
-        <artifactId>commons-httpclient</artifactId>
+        <groupId>org.apache.httpcomponents</groupId>
+        <artifactId>httpclient</artifactId>
         <version>${httpclient.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.httpcomponents</groupId>
+        <artifactId>httpcore</artifactId>
+        <version>${httpcore.version}</version>
       </dependency>
       <dependency>
         <groupId>commons-cli</groupId>
@@ -1743,6 +1797,16 @@
        <version>${bouncycastle.version}</version>
        <scope>test</scope>
      </dependency>
+     <dependency>
+       <groupId>org.apache.kerby</groupId>
+       <artifactId>kerb-client</artifactId>
+       <version>${kerby.version}</version>
+     </dependency>
+     <dependency>
+       <groupId>org.apache.kerby</groupId>
+       <artifactId>kerb-simplekdc</artifactId>
+       <version>${kerby.version}</version>
+     </dependency>
     </dependencies>
   </dependencyManagement>
   <!-- Dependencies needed by subprojects -->
@@ -1797,6 +1861,17 @@
 
   -->
   <profiles>
+    <profile>
+      <id>rsgroup</id>
+      <activation>
+        <property>
+            <name>!skip-rsgroup</name>
+        </property>
+      </activation>
+      <modules>
+        <module>hbase-rsgroup</module>
+      </modules>
+    </profile>
     <profile>
       <id>os.linux</id>
       <activation>
@@ -1927,6 +2002,11 @@
           </dependency>
           <dependency>
             <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-aws</artifactId>
+            <version>${hadoop-two.version}</version>
+          </dependency>
+          <dependency>
+            <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-mapreduce-client-jobclient</artifactId>
             <version>${hadoop-two.version}</version>
             <exclusions>
@@ -1999,6 +2079,10 @@
             <artifactId>hadoop-common</artifactId>
             <version>${hadoop-two.version}</version>
             <exclusions>
+            <exclusion>
+              <groupId>commons-httpclient</groupId>
+              <artifactId>commons-httpclient</artifactId>
+            </exclusion>
               <exclusion>
                 <groupId>javax.servlet.jsp</groupId>
                 <artifactId>jsp-api</artifactId>
@@ -2029,6 +2113,10 @@
             <artifactId>hadoop-minicluster</artifactId>
             <version>${hadoop-two.version}</version>
             <exclusions>
+            <exclusion>
+              <groupId>commons-httpclient</groupId>
+              <artifactId>commons-httpclient</artifactId>
+            </exclusion>
               <exclusion>
                 <groupId>javax.servlet.jsp</groupId>
                 <artifactId>jsp-api</artifactId>
@@ -2165,6 +2253,10 @@
            <artifactId>hadoop-common</artifactId>
            <version>${hadoop-three.version}</version>
            <exclusions>
+            <exclusion>
+              <groupId>commons-httpclient</groupId>
+              <artifactId>commons-httpclient</artifactId>
+            </exclusion>
              <exclusion>
                <groupId>javax.servlet.jsp</groupId>
                <artifactId>jsp-api</artifactId>
@@ -2200,6 +2292,10 @@
            <artifactId>hadoop-minicluster</artifactId>
            <version>${hadoop-three.version}</version>
            <exclusions>
+            <exclusion>
+              <groupId>commons-httpclient</groupId>
+              <artifactId>commons-httpclient</artifactId>
+            </exclusion>
              <exclusion>
                <groupId>javax.servlet.jsp</groupId>
                <artifactId>jsp-api</artifactId>
@@ -2261,7 +2357,7 @@
         <surefire.firstPartForkCount>1</surefire.firstPartForkCount>
         <surefire.skipFirstPart>false</surefire.skipFirstPart>
         <surefire.skipSecondPart>true</surefire.skipSecondPart>
-        <surefire.firstPartGroups/>
+        <surefire.firstPartGroups />
       </properties>
     </profile>
     <profile>
@@ -2275,7 +2371,7 @@
         <surefire.skipFirstPart>false</surefire.skipFirstPart>
         <surefire.skipSecondPart>true</surefire.skipSecondPart>
         <surefire.firstPartGroups>org.apache.hadoop.hbase.testclassification.SmallTests</surefire.firstPartGroups>
-        <surefire.secondPartGroups/>
+        <surefire.secondPartGroups />
       </properties>
     </profile>
     <profile>
@@ -2288,7 +2384,7 @@
         <surefire.skipFirstPart>false</surefire.skipFirstPart>
         <surefire.skipSecondPart>true</surefire.skipSecondPart>
         <surefire.firstPartGroups>org.apache.hadoop.hbase.testclassification.MediumTests</surefire.firstPartGroups>
-        <surefire.secondPartGroups/>
+        <surefire.secondPartGroups />
       </properties>
     </profile>
     <profile>
@@ -2301,7 +2397,7 @@
         <surefire.skipFirstPart>false</surefire.skipFirstPart>
         <surefire.skipSecondPart>true</surefire.skipSecondPart>
         <surefire.firstPartGroups>org.apache.hadoop.hbase.testclassification.LargeTests</surefire.firstPartGroups>
-        <surefire.secondPartGroups/>
+        <surefire.secondPartGroups />
       </properties>
     </profile>
     <profile>
@@ -2345,7 +2441,7 @@
         <surefire.provider>surefire-junit4</surefire.provider>
         <surefire.skipFirstPart>false</surefire.skipFirstPart>
         <surefire.skipSecondPart>true</surefire.skipSecondPart>
-        <surefire.firstPartGroups/>
+        <surefire.firstPartGroups />
       </properties>
     </profile>
     <!-- Profile for running clover. You need to have a clover license under ~/.clover.license for ${clover.version}
@@ -2515,6 +2611,10 @@
           <suppressionsLocation>hbase/checkstyle-suppressions.xml</suppressionsLocation>
         </configuration>
       </plugin>
+      <plugin>
+        <groupId>org.scala-tools</groupId>
+        <artifactId>maven-scala-plugin</artifactId>
+      </plugin>
     </plugins>
   </reporting>
   <distributionManagement>
@@ -2526,5 +2626,10 @@
                -->
       <url>file:///tmp</url>
     </site>
+    <repository>
+      <id>${repoid}</id>
+      <name>${reponame}</name>
+      <url>${repourl}</url>
+    </repository>
   </distributionManagement>
 </project>

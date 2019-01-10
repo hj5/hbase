@@ -35,7 +35,10 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
@@ -56,6 +59,7 @@ import org.apache.hadoop.hbase.client.RegionReplicaUtil;
 import org.apache.hadoop.hbase.io.HFileLink;
 import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.MasterFileSystem;
+import org.apache.hadoop.hbase.mob.MobUtils;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.SnapshotDescription;
 import org.apache.hadoop.hbase.protobuf.generated.SnapshotProtos.SnapshotRegionManifest;
@@ -230,7 +234,13 @@ public class SnapshotTestingUtils {
     List<HRegionInfo> regions = admin.getTableRegions(tableName);
     // remove the non-default regions
     RegionReplicaUtil.removeNonDefaultRegions(regions);
-    assertEquals(regions.size(), regionManifests.size());
+    boolean hasMob = regionManifests.containsKey(MobUtils.getMobRegionInfo(tableName)
+        .getEncodedName());
+    if (hasMob) {
+      assertEquals(regions.size(), regionManifests.size() - 1);
+    } else {
+      assertEquals(regions.size(), regionManifests.size());
+    }
 
     // Verify Regions (redundant check, see MasterSnapshotVerifier)
     for (HRegionInfo info : regions) {
@@ -440,7 +450,7 @@ public class SnapshotTestingUtils {
   //  Snapshot Mock
   // ==========================================================================
   public static class SnapshotMock {
-    private final static String TEST_FAMILY = "cf";
+    protected final static String TEST_FAMILY = "cf";
     public final static int TEST_NUM_REGIONS = 4;
 
     private final Configuration conf;
@@ -524,6 +534,69 @@ public class SnapshotTestingUtils {
         return regionData.files;
       }
 
+      private void corruptFile(Path p) throws IOException {
+        String manifestName = p.getName();
+
+        // Rename the original region-manifest file
+        Path newP = new Path(p.getParent(), manifestName + "1");
+        fs.rename(p, newP);
+
+        // Create a new region-manifest file
+        FSDataOutputStream out = fs.create(p);
+
+        //Copy the first 25 bytes of the original region-manifest into the new one,
+        //make it a corrupted region-manifest file.
+        FSDataInputStream input = fs.open(newP);
+        byte[] buffer = new byte[25];
+        int len = input.read(0, buffer, 0, 25);
+        if (len > 1) {
+          out.write(buffer, 0, len - 1);
+        }
+        out.close();
+
+        // Delete the original region-manifest
+        fs.delete(newP);
+      }
+
+      /**
+       * Corrupt one region-manifest file
+       *
+       * @throws IOException on unexecpted error from the FS
+       */
+      public void corruptOneRegionManifest() throws IOException {
+        FileStatus[] manifestFiles = FSUtils.listStatus(fs, snapshotDir, new PathFilter() {
+          @Override public boolean accept(Path path) {
+            return path.getName().startsWith(SnapshotManifestV2.SNAPSHOT_MANIFEST_PREFIX);
+          }
+        });
+
+        if (manifestFiles.length == 0) return;
+
+        // Just choose the first one
+        Path p = manifestFiles[0].getPath();
+        corruptFile(p);
+      }
+
+      /**
+       * Corrupt data-manifest file
+       *
+       * @throws IOException on unexecpted error from the FS
+       */
+      public void corruptDataManifest() throws IOException {
+        FileStatus[] manifestFiles = FSUtils.listStatus(fs, snapshotDir, new PathFilter() {
+          @Override
+          public boolean accept(Path path) {
+            return path.getName().startsWith(SnapshotManifest.DATA_MANIFEST_NAME);
+          }
+        });
+
+        if (manifestFiles.length == 0) return;
+
+        // Just choose the first one
+        Path p = manifestFiles[0].getPath();
+        corruptFile(p);
+      }
+
       public Path commit() throws IOException {
         ForeignExceptionDispatcher monitor = new ForeignExceptionDispatcher(desc.getName());
         SnapshotManifest manifest = SnapshotManifest.create(conf, fs, snapshotDir, desc, monitor);
@@ -533,6 +606,13 @@ public class SnapshotTestingUtils {
         snapshotDir = SnapshotDescriptionUtils.getCompletedSnapshotDir(desc, rootDir);
         return snapshotDir;
       }
+
+      public void consolidate() throws IOException {
+        ForeignExceptionDispatcher monitor = new ForeignExceptionDispatcher(desc.getName());
+        SnapshotManifest manifest = SnapshotManifest.create(conf, fs, snapshotDir, desc, monitor);
+        manifest.addTableDescriptor(htd);
+        manifest.consolidate();
+      }
     }
 
     public SnapshotMock(final Configuration conf, final FileSystem fs, final Path rootDir) {
@@ -541,19 +621,35 @@ public class SnapshotTestingUtils {
       this.rootDir = rootDir;
     }
 
-    public SnapshotBuilder createSnapshotV1(final String snapshotName) throws IOException {
-      return createSnapshot(snapshotName, SnapshotManifestV1.DESCRIPTOR_VERSION);
-    }
-
-    public SnapshotBuilder createSnapshotV2(final String snapshotName) throws IOException {
-      return createSnapshot(snapshotName, SnapshotManifestV2.DESCRIPTOR_VERSION);
-    }
-
-    private SnapshotBuilder createSnapshot(final String snapshotName, final int version)
+    public SnapshotBuilder createSnapshotV1(final String snapshotName, final String tableName)
         throws IOException {
-      HTableDescriptor htd = createHtd(snapshotName);
+      return createSnapshot(snapshotName, tableName, SnapshotManifestV1.DESCRIPTOR_VERSION);
+    }
 
-      RegionData[] regions = createTable(htd, TEST_NUM_REGIONS);
+    public SnapshotBuilder createSnapshotV1(final String snapshotName, final String tableName,
+        final int numRegions) throws IOException {
+      return createSnapshot(snapshotName, tableName, numRegions, SnapshotManifestV1.DESCRIPTOR_VERSION);
+    }
+
+    public SnapshotBuilder createSnapshotV2(final String snapshotName, final String tableName)
+        throws IOException {
+      return createSnapshot(snapshotName, tableName, SnapshotManifestV2.DESCRIPTOR_VERSION);
+    }
+
+    public SnapshotBuilder createSnapshotV2(final String snapshotName, final String tableName,
+        final int numRegions) throws IOException {
+      return createSnapshot(snapshotName, tableName, numRegions, SnapshotManifestV2.DESCRIPTOR_VERSION);
+    }
+
+    private SnapshotBuilder createSnapshot(final String snapshotName, final String tableName,
+        final int version) throws IOException {
+      return createSnapshot(snapshotName, tableName, TEST_NUM_REGIONS, version);
+    }
+
+    private SnapshotBuilder createSnapshot(final String snapshotName, final String tableName,
+        final int numRegions, final int version) throws IOException {
+      HTableDescriptor htd = createHtd(tableName);
+      RegionData[] regions = createTable(htd, numRegions);
 
       SnapshotDescription desc = SnapshotDescription.newBuilder()
         .setTable(htd.getNameAsString())

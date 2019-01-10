@@ -24,10 +24,12 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.TreeMap;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
@@ -56,10 +58,12 @@ import org.apache.hadoop.hbase.replication.ReplicationPeerZKImpl;
 import org.apache.hadoop.hbase.replication.ReplicationPeers;
 import org.apache.hadoop.hbase.replication.ReplicationQueuesClient;
 import org.apache.hadoop.hbase.util.Pair;
-import org.apache.hadoop.hbase.zookeeper.ZKUtil;
 import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.data.Stat;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.Lists;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Lists;
@@ -590,7 +594,9 @@ public class ReplicationAdmin implements Closeable {
    * Connect to peer and check the table descriptor on peer:
    * <ol>
    * <li>Create the same table on peer when not exist.</li>
-   * <li>Throw exception if the table exists on peer cluster but descriptors are not same.</li>
+   * <li>Throw an exception if the table already has replication enabled on any of the column
+   * families.</li>
+   * <li>Throw an exception if the table exists on peer cluster but descriptors are not same.</li>
    * </ol>
    * @param tableName name of the table to sync to the peer
    * @param splits table split keys
@@ -604,20 +610,21 @@ public class ReplicationAdmin implements Closeable {
     }
     for (ReplicationPeer repPeer : repPeers) {
       Configuration peerConf = repPeer.getConfiguration();
-      HTableDescriptor htd = null;
+      HTableDescriptor localHtd = null;
       try (Connection conn = ConnectionFactory.createConnection(peerConf);
           Admin admin = this.connection.getAdmin();
           Admin repHBaseAdmin = conn.getAdmin()) {
-        htd = admin.getTableDescriptor(tableName);
+        localHtd = admin.getTableDescriptor(tableName);
         HTableDescriptor peerHtd = null;
         if (!repHBaseAdmin.tableExists(tableName)) {
-          repHBaseAdmin.createTable(htd, splits);
+          repHBaseAdmin.createTable(localHtd, splits);
         } else {
           peerHtd = repHBaseAdmin.getTableDescriptor(tableName);
           if (peerHtd == null) {
             throw new IllegalArgumentException("Failed to get table descriptor for table "
                 + tableName.getNameAsString() + " from peer cluster " + repPeer.getId());
-          } else if (!peerHtd.equals(htd)) {
+          }
+          if (!compareForReplication(peerHtd, localHtd)) {
             throw new IllegalArgumentException("Table " + tableName.getNameAsString()
                 + " exists in peer cluster " + repPeer.getId()
                 + ", but the table descriptors are not same when comapred with source cluster."
@@ -628,7 +635,8 @@ public class ReplicationAdmin implements Closeable {
     }
   }
 
-  private List<ReplicationPeer> listValidReplicationPeers() {
+  @VisibleForTesting
+  List<ReplicationPeer> listValidReplicationPeers() {
     Map<String, ReplicationPeerConfig> peers = listPeerConfigs();
     if (peers == null || peers.size() <= 0) {
       return null;
@@ -636,18 +644,16 @@ public class ReplicationAdmin implements Closeable {
     List<ReplicationPeer> validPeers = new ArrayList<ReplicationPeer>(peers.size());
     for (Entry<String, ReplicationPeerConfig> peerEntry : peers.entrySet()) {
       String peerId = peerEntry.getKey();
-      String clusterKey = peerEntry.getValue().getClusterKey();
-      Configuration peerConf = new Configuration(this.connection.getConfiguration());
       Stat s = null;
       try {
-        ZKUtil.applyClusterKeyToConf(peerConf, clusterKey);
         Pair<ReplicationPeerConfig, Configuration> pair = this.replicationPeers.getPeerConf(peerId);
+        Configuration peerConf = pair.getSecond();
         ReplicationPeer peer = new ReplicationPeerZKImpl(peerConf, peerId, pair.getFirst());
         s =
             zkw.getRecoverableZooKeeper().exists(peerConf.get(HConstants.ZOOKEEPER_ZNODE_PARENT),
               null);
         if (null == s) {
-          LOG.info(peerId + ' ' + clusterKey + " is invalid now.");
+          LOG.info(peerId + ' ' + pair.getFirst().getClusterKey() + " is invalid now.");
           continue;
         }
         validPeers.add(peer);
@@ -665,10 +671,6 @@ public class ReplicationAdmin implements Closeable {
         LOG.warn("Failed to get valid replication peers due to InterruptedException.");
         LOG.debug("Failure details to get valid replication peers.", e);
         continue;
-      } catch (IOException e) {
-        LOG.warn("Failed to get valid replication peers due to IOException.");
-        LOG.debug("Failure details to get valid replication peers.", e);
-        continue;
       }
     }
     return validPeers;
@@ -677,15 +679,17 @@ public class ReplicationAdmin implements Closeable {
   /**
    * Set the table's replication switch if the table's replication switch is already not set.
    * @param tableName name of the table
-   * @param isRepEnabled is replication switch enable or disable
+   * @param enableRep is replication switch enable or disable
    * @throws IOException if a remote or network exception occurs
    */
-  private void setTableRep(final TableName tableName, boolean isRepEnabled) throws IOException {
+  private void setTableRep(final TableName tableName, boolean enableRep) throws IOException {
     Admin admin = null;
     try {
       admin = this.connection.getAdmin();
       HTableDescriptor htd = admin.getTableDescriptor(tableName);
-      if (isTableRepEnabled(htd) ^ isRepEnabled) {
+      ReplicationState currentReplicationState = getTableReplicationState(htd);
+      if (enableRep && currentReplicationState != ReplicationState.ENABLED
+          || !enableRep && currentReplicationState != ReplicationState.DISABLED) {
         boolean isOnlineSchemaUpdateEnabled =
             this.connection.getConfiguration()
                 .getBoolean("hbase.online.schema.update.enable", true);
@@ -693,7 +697,7 @@ public class ReplicationAdmin implements Closeable {
           admin.disableTable(tableName);
         }
         for (HColumnDescriptor hcd : htd.getFamilies()) {
-          hcd.setScope(isRepEnabled ? HConstants.REPLICATION_SCOPE_GLOBAL
+          hcd.setScope(enableRep ? HConstants.REPLICATION_SCOPE_GLOBAL
               : HConstants.REPLICATION_SCOPE_LOCAL);
         }
         admin.modifyTable(tableName, htd);
@@ -714,15 +718,103 @@ public class ReplicationAdmin implements Closeable {
   }
 
   /**
-   * @param htd table descriptor details for the table to check
-   * @return true if table's replication switch is enabled
+   * This enum indicates the current state of the replication for a given table.
    */
-  private boolean isTableRepEnabled(HTableDescriptor htd) {
+  private enum ReplicationState {
+    ENABLED, // all column families enabled
+    MIXED, // some column families enabled, some disabled
+    DISABLED // all column families disabled
+  }
+
+  /**
+   * @param htd table descriptor details for the table to check
+   * @return ReplicationState the current state of the table.
+   */
+  private ReplicationState getTableReplicationState(HTableDescriptor htd) {
+    boolean hasEnabled = false;
+    boolean hasDisabled = false;
+
     for (HColumnDescriptor hcd : htd.getFamilies()) {
       if (hcd.getScope() != HConstants.REPLICATION_SCOPE_GLOBAL) {
+        hasDisabled = true;
+      } else {
+        hasEnabled = true;
+      }
+    }
+
+    if (hasEnabled && hasDisabled) return ReplicationState.MIXED;
+    if (hasEnabled) return ReplicationState.ENABLED;
+    return ReplicationState.DISABLED;
+  }
+
+  /**
+   * Copies the REPLICATION_SCOPE of table descriptor passed as an argument. Before copy, the method
+   * ensures that the name of table and column-families should match.
+   * @param peerHtd descriptor on peer cluster
+   * @param localHtd - The HTableDescriptor of table from source cluster.
+   * @return true If the name of table and column families match and REPLICATION_SCOPE copied
+   *         successfully. false If there is any mismatch in the names.
+   */
+  private boolean copyReplicationScope(final HTableDescriptor peerHtd,
+      final HTableDescriptor localHtd) {
+    // Copy the REPLICATION_SCOPE only when table names and the names of
+    // Column-Families are same.
+    int result = peerHtd.getTableName().compareTo(localHtd.getTableName());
+
+    if (result == 0) {
+      Iterator<HColumnDescriptor> remoteHCDIter = peerHtd.getFamilies().iterator();
+      Iterator<HColumnDescriptor> localHCDIter = localHtd.getFamilies().iterator();
+
+      while (remoteHCDIter.hasNext() && localHCDIter.hasNext()) {
+        HColumnDescriptor remoteHCD = remoteHCDIter.next();
+        HColumnDescriptor localHCD = localHCDIter.next();
+
+        String remoteHCDName = remoteHCD.getNameAsString();
+        String localHCDName = localHCD.getNameAsString();
+
+        if (remoteHCDName.equals(localHCDName)) {
+          remoteHCD.setScope(localHCD.getScope());
+        } else {
+          result = -1;
+          break;
+        }
+      }
+      if (remoteHCDIter.hasNext() || localHCDIter.hasNext()) {
         return false;
       }
     }
-    return true;
+
+    return result == 0;
+  }
+
+  /**
+   * Compare the contents of the descriptor with another one passed as a parameter for replication
+   * purpose. The REPLICATION_SCOPE field is ignored during comparison.
+   * @param peerHtd descriptor on peer cluster
+   * @param localHtd descriptor on source cluster which needs to be replicated.
+   * @return true if the contents of the two descriptors match (ignoring just REPLICATION_SCOPE).
+   * @see java.lang.Object#equals(java.lang.Object)
+   */
+  private boolean compareForReplication(HTableDescriptor peerHtd, HTableDescriptor localHtd) {
+    if (peerHtd == localHtd) {
+      return true;
+    }
+    if (peerHtd == null) {
+      return false;
+    }
+    boolean result = false;
+
+    // Create a copy of peer HTD as we need to change its replication
+    // scope to match with the local HTD.
+    HTableDescriptor peerHtdCopy = new HTableDescriptor(peerHtd);
+
+    result = copyReplicationScope(peerHtdCopy, localHtd);
+
+    // If copy was successful, compare the two tables now.
+    if (result) {
+      result = (peerHtdCopy.compareTo(localHtd) == 0);
+    }
+
+    return result;
   }
 }

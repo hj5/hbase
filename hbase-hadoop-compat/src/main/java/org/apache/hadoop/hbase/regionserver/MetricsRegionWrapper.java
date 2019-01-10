@@ -18,10 +18,6 @@
 
 package org.apache.hadoop.hbase.regionserver;
 
-import java.util.Map;
-
-import org.apache.commons.math.stat.descriptive.DescriptiveStatistics;
-
 /**
  * Interface of class that will wrap an HRegion and export numbers so they can be
  * used in MetricsRegionSource
@@ -74,9 +70,34 @@ public interface MetricsRegionWrapper {
   long getReadRequestCount();
 
   /**
+   * @return Max age of store files under this region
+   */
+  long getMaxStoreFileAge();
+
+  /**
+   * @return Min age of store files under this region
+   */
+  long getMinStoreFileAge();
+
+  /**
+   *  @return Average age of store files under this region
+   */
+  long getAvgStoreFileAge();
+
+  /**
+   *  @return Number of reference files under this region
+   */
+  long getNumReferenceFiles();
+
+  /**
    * Get the total number of mutations that have been issued against this region.
    */
   long getWriteRequestCount();
+
+  /**
+   * Get the total number of requests that have been issued against this region.
+   */
+  long getTotalRequestCount();
 
   long getNumFilesCompacted();
 
@@ -84,8 +105,10 @@ public interface MetricsRegionWrapper {
 
   long getNumCompactionsCompleted();
 
+  int getRegionHashCode();
+
   /**
-   * Get the time spent by coprocessors in this region.
+   * Get the replica id of this region.
    */
-  Map<String, DescriptiveStatistics> getCoprocessorExecutionStatistics();
+  int getReplicaId();
 }

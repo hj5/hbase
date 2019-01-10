@@ -223,8 +223,8 @@ public class TestModifyTableProcedure {
     htd.setRegionReplication(3);
 
     // Start the Modify procedure && kill the executor
-    long procId =
-        procExec.submitProcedure(new ModifyTableProcedure(procExec.getEnvironment(), htd));
+    long procId = procExec.submitProcedure(
+      new ModifyTableProcedure(procExec.getEnvironment(), htd));
 
     // Restart the executor and execute the step twice
     int numberOfSteps = ModifyTableState.values().length;
@@ -265,8 +265,8 @@ public class TestModifyTableProcedure {
     htd.removeFamily(cf3.getBytes());
 
     // Start the Modify procedure && kill the executor
-    long procId =
-        procExec.submitProcedure(new ModifyTableProcedure(procExec.getEnvironment(), htd));
+    long procId = procExec.submitProcedure(
+      new ModifyTableProcedure(procExec.getEnvironment(), htd));
 
     // Restart the executor and execute the step twice
     int numberOfSteps = ModifyTableState.values().length;
@@ -303,8 +303,8 @@ public class TestModifyTableProcedure {
     htd.addFamily(new HColumnDescriptor(familyName));
 
     // Start the Modify procedure && kill the executor
-    long procId =
-        procExec.submitProcedure(new ModifyTableProcedure(procExec.getEnvironment(), htd));
+    long procId = procExec.submitProcedure(
+      new ModifyTableProcedure(procExec.getEnvironment(), htd));
 
     // Restart the executor and rollback the step twice
     int numberOfSteps = ModifyTableState.values().length - 4; // failing in the middle of proc
@@ -340,8 +340,8 @@ public class TestModifyTableProcedure {
     htd.setRegionReplication(3);
 
     // Start the Modify procedure && kill the executor
-    long procId =
-        procExec.submitProcedure(new ModifyTableProcedure(procExec.getEnvironment(), htd));
+    long procId = procExec.submitProcedure(
+      new ModifyTableProcedure(procExec.getEnvironment(), htd));
 
     // Restart the executor and rollback the step twice
     int numberOfSteps = ModifyTableState.values().length - 4; // failing in the middle of proc
@@ -378,8 +378,8 @@ public class TestModifyTableProcedure {
     htd.setRegionReplication(3);
 
     // Start the Modify procedure && kill the executor
-    long procId =
-        procExec.submitProcedure(new ModifyTableProcedure(procExec.getEnvironment(), htd));
+    long procId = procExec.submitProcedure(
+      new ModifyTableProcedure(procExec.getEnvironment(), htd));
 
     // Failing after MODIFY_TABLE_DELETE_FS_LAYOUT we should not trigger the rollback.
     // NOTE: the 5 (number of MODIFY_TABLE_DELETE_FS_LAYOUT + 1 step) is hardcoded,

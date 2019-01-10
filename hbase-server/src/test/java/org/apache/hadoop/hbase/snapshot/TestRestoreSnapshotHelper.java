@@ -52,13 +52,16 @@ import org.mockito.Mockito;
 public class TestRestoreSnapshotHelper {
   final Log LOG = LogFactory.getLog(getClass());
 
-  private final static HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
-  private final static String TEST_HFILE = "abc";
+  protected final static HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
+  protected final static String TEST_HFILE = "abc";
 
-  private Configuration conf;
-  private Path archiveDir;
-  private FileSystem fs;
-  private Path rootDir;
+  protected Configuration conf;
+  protected Path archiveDir;
+  protected FileSystem fs;
+  protected Path rootDir;
+
+  protected void setupConf(Configuration conf) {
+  }
 
   @Before
   public void setup() throws Exception {
@@ -66,6 +69,7 @@ public class TestRestoreSnapshotHelper {
     archiveDir = new Path(rootDir, HConstants.HFILE_ARCHIVE_DIRECTORY);
     fs = TEST_UTIL.getTestFileSystem();
     conf = TEST_UTIL.getConfiguration();
+    setupConf(conf);
     FSUtils.setRootDir(conf, rootDir);
   }
 
@@ -74,12 +78,26 @@ public class TestRestoreSnapshotHelper {
     fs.delete(TEST_UTIL.getDataTestDir(), true);
   }
 
+  protected SnapshotMock createSnapshotMock() throws IOException {
+    return new SnapshotMock(TEST_UTIL.getConfiguration(), fs, rootDir);
+  }
+
   @Test
   public void testRestore() throws IOException {
+    restoreAndVerify("snapshot", "testRestore");
+  }
+
+  @Test
+  public void testRestoreWithNamespace() throws IOException {
+    restoreAndVerify("snapshot", "namespace1:testRestoreWithNamespace");
+  }
+
+  private void restoreAndVerify(final String snapshotName, final String tableName)
+      throws IOException {
     // Test Rolling-Upgrade like Snapshot.
     // half machines writing using v1 and the others using v2 format.
-    SnapshotMock snapshotMock = new SnapshotMock(TEST_UTIL.getConfiguration(), fs, rootDir);
-    SnapshotMock.SnapshotBuilder builder = snapshotMock.createSnapshotV2("snapshot");
+    SnapshotMock snapshotMock = createSnapshotMock();
+    SnapshotMock.SnapshotBuilder builder = snapshotMock.createSnapshotV2("snapshot", tableName);
     builder.addRegionV1();
     builder.addRegionV2();
     builder.addRegionV2();
@@ -128,7 +146,7 @@ public class TestRestoreSnapshotHelper {
    * @param sd The snapshot descriptor
    * @param htdClone The HTableDescriptor of the table to restore/clone.
    */
-  public void testRestore(final Path snapshotDir, final SnapshotDescription sd,
+  private void testRestore(final Path snapshotDir, final SnapshotDescription sd,
       final HTableDescriptor htdClone) throws IOException {
     LOG.debug("pre-restore table=" + htdClone.getTableName() + " snapshot=" + snapshotDir);
     FSUtils.logFileSystemState(fs, rootDir, LOG);

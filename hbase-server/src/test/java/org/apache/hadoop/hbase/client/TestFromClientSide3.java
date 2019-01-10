@@ -20,9 +20,9 @@
 package org.apache.hadoop.hbase.client;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.fail;
 
 import java.util.ArrayList;
@@ -32,14 +32,14 @@ import java.util.Random;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.HTableDescriptor;
-import org.apache.hadoop.hbase.testclassification.LargeTests;
+import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos;
+import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
 import org.junit.After;
@@ -485,31 +485,6 @@ public class TestFromClientSide3 {
     assertTrue(res.isEmpty() == true);
     res = table.get(new Get(ROW_BYTES));
     assertTrue(Arrays.equals(res.getValue(FAMILY, COL_QUAL), VAL_BYTES));
-    table.close();
-  }
-
-  @Test
-  public void testLeaseRenewal() throws Exception {
-    HTable table = TEST_UTIL.createTable(
-      Bytes.toBytes("testLeaseRenewal"), FAMILY);
-    Put p = new Put(ROW_BYTES);
-    p.add(FAMILY, COL_QUAL, VAL_BYTES);
-    table.put(p);
-    p = new Put(ANOTHERROW);
-    p.add(FAMILY, COL_QUAL, VAL_BYTES);
-    table.put(p);
-    Scan s = new Scan();
-    s.setCaching(1);
-    ResultScanner rs = table.getScanner(s);
-    // make sure that calling renewLease does not impact the scan results
-    assertTrue(((AbstractClientScanner)rs).renewLease());
-    assertTrue(Arrays.equals(rs.next().getRow(), ANOTHERROW));
-    assertTrue(((AbstractClientScanner)rs).renewLease());
-    assertTrue(Arrays.equals(rs.next().getRow(), ROW_BYTES));
-    assertTrue(((AbstractClientScanner)rs).renewLease());
-    assertNull(rs.next());
-    assertFalse(((AbstractClientScanner)rs).renewLease());
-    rs.close();
     table.close();
   }
 }

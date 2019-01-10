@@ -12,8 +12,14 @@
 package org.apache.hadoop.hbase.quotas;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.concurrent.ConcurrentHashMap;
 
+import org.apache.commons.lang.builder.HashCodeBuilder;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
@@ -31,9 +37,13 @@ import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.SetQuotaRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.SetQuotaResponse;
 import org.apache.hadoop.hbase.protobuf.generated.QuotaProtos.Quotas;
+import org.apache.hadoop.hbase.protobuf.generated.QuotaProtos.SpaceLimitRequest;
+import org.apache.hadoop.hbase.protobuf.generated.QuotaProtos.SpaceQuota;
 import org.apache.hadoop.hbase.protobuf.generated.QuotaProtos.Throttle;
 import org.apache.hadoop.hbase.protobuf.generated.QuotaProtos.ThrottleRequest;
 import org.apache.hadoop.hbase.protobuf.generated.QuotaProtos.TimedQuota;
+
+import com.google.common.annotations.VisibleForTesting;
 
 /**
  * Master Quota Manager. It is responsible for initialize the quota table on the first-run and
@@ -52,6 +62,7 @@ public class MasterQuotaManager implements RegionStateListener {
   private NamedLock<String> userLocks;
   private boolean enabled = false;
   private NamespaceAuditor namespaceQuotaManager;
+  private ConcurrentHashMap<HRegionInfo, SizeSnapshot> regionSizes;
 
   public MasterQuotaManager(final MasterServices masterServices) {
     this.masterServices = masterServices;
@@ -75,6 +86,7 @@ public class MasterQuotaManager implements RegionStateListener {
     namespaceLocks = new NamedLock<String>();
     tableLocks = new NamedLock<TableName>();
     userLocks = new NamedLock<String>();
+    regionSizes = new ConcurrentHashMap<>();
 
     namespaceQuotaManager = new NamespaceAuditor(masterServices);
     namespaceQuotaManager.start();
@@ -307,9 +319,11 @@ public class MasterQuotaManager implements RegionStateListener {
     Quotas quotas = quotaOps.fetch();
     quotaOps.preApply(quotas);
 
+    // Copy the user request into the Quotas object
     Quotas.Builder builder = (quotas != null) ? quotas.toBuilder() : Quotas.newBuilder();
     if (req.hasThrottle()) applyThrottle(builder, req.getThrottle());
     if (req.hasBypassGlobals()) applyBypassGlobals(builder, req.getBypassGlobals());
+    if (req.hasSpaceLimit()) applySpaceLimit(builder, req.getSpaceLimit());
 
     // Submit new changes
     quotas = builder.build();
@@ -449,6 +463,39 @@ public class MasterQuotaManager implements RegionStateListener {
     }
   }
 
+  /**
+   * Adds the information from the provided {@link SpaceLimitRequest} to the {@link Quotas} builder.
+   *
+   * @param quotas The builder to update.
+   * @param req The request to extract space quota information from.
+   */
+  void applySpaceLimit(final Quotas.Builder quotas, final SpaceLimitRequest req) {
+    if (req.hasQuota()) {
+      SpaceQuota spaceQuota = req.getQuota();
+      // If we have the remove flag, unset the space quota.
+      if (spaceQuota.getRemove()) {
+        quotas.setSpace(SpaceQuota.getDefaultInstance());
+      } else {
+        // Otherwise, update the new quota
+        applySpaceQuota(quotas, req.getQuota());
+      }
+    }
+  }
+
+  /**
+   * Merges the provided {@link SpaceQuota} into the given {@link Quotas} builder.
+   *
+   * @param quotas The Quotas builder instance to update
+   * @param quota The SpaceQuota instance to update from
+   */
+  void applySpaceQuota(final Quotas.Builder quotas, final SpaceQuota quota) {
+    // Create a builder for Quotas
+    SpaceQuota.Builder builder = quotas.hasSpace() ? quotas.getSpace().toBuilder() :
+        SpaceQuota.newBuilder();
+    // Update the values from the provided quota into the new one and set it on Quotas.
+    quotas.setSpace(builder.mergeFrom(quota).build());
+  }
+
   private void validateTimedQuota(final TimedQuota timedQuota) throws IOException {
     if (timedQuota.getSoftLimit() < 1) {
       throw new DoNotRetryIOException(new UnsupportedOperationException(
@@ -508,5 +555,88 @@ public class MasterQuotaManager implements RegionStateListener {
     if (enabled) {
       this.namespaceQuotaManager.removeRegionFromNamespaceUsage(hri);
     }
+  }
+
+  /**
+   * Holds the size of a region at the given time, millis since the epoch.
+   */
+  private static class SizeSnapshot {
+    private final long size;
+    private final long time;
+
+    public SizeSnapshot(long size, long time) {
+      this.size = size;
+      this.time = time;
+    }
+
+    public long getSize() {
+      return size;
+    }
+
+    public long getTime() {
+      return time;
+    }
+
+    public boolean equals(Object o) {
+      if (o instanceof SizeSnapshot) {
+        SizeSnapshot other = (SizeSnapshot) o;
+        return size == other.size && time == other.time;
+      }
+      return false;
+    }
+
+    public int hashCode() {
+      HashCodeBuilder hcb = new HashCodeBuilder();
+      return hcb.append(size).append(time).toHashCode();
+    }
+
+    @Override
+    public String toString() {
+      StringBuilder sb = new StringBuilder(32);
+      sb.append("SizeSnapshot={size=").append(size).append("B, ");
+      sb.append("time=").append(time).append("}");
+      return sb.toString();
+    }
+  }
+
+  @VisibleForTesting
+  void initializeRegionSizes() {
+    assert null == regionSizes;
+    this.regionSizes = new ConcurrentHashMap<>();
+  }
+
+  public void addRegionSize(HRegionInfo hri, long size, long time) {
+    if (null == regionSizes) {
+      return;
+    }
+    regionSizes.put(hri, new SizeSnapshot(size, time));
+  }
+
+  public Map<HRegionInfo, Long> snapshotRegionSizes() {
+    HashMap<HRegionInfo, Long> copy = new HashMap<>();
+    if (null == regionSizes) {
+      return copy;
+    }
+
+    for (Entry<HRegionInfo,SizeSnapshot> entry : regionSizes.entrySet()) {
+      copy.put(entry.getKey(), entry.getValue().getSize());
+    }
+    return copy;
+  }
+
+  public int pruneEntriesOlderThan(long timeToPruneBefore) {
+    if (null == regionSizes) {
+      return 0;
+    }
+    int numEntriesRemoved = 0;
+    Iterator<Entry<HRegionInfo,SizeSnapshot>> iterator = regionSizes.entrySet().iterator();
+    while (iterator.hasNext()) {
+      long currentEntryTime = iterator.next().getValue().getTime();
+      if (currentEntryTime < timeToPruneBefore) {
+        iterator.remove();
+        numEntriesRemoved++;
+      }
+    }
+    return numEntriesRemoved;
   }
 }

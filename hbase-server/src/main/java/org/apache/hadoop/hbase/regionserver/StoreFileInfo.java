@@ -49,12 +49,23 @@ public class StoreFileInfo {
   /**
    * A non-capture group, for hfiles, so that this can be embedded.
    * HFiles are uuid ([0-9a-z]+). Bulk loaded hfiles has (_SeqId_[0-9]+_) has suffix.
+   * The mob del file has (_del) as suffix.
    */
-  public static final String HFILE_NAME_REGEX = "[0-9a-f]+(?:_SeqId_[0-9]+_)?";
+  public static final String HFILE_NAME_REGEX = "[0-9a-f]+(?:(?:_SeqId_[0-9]+_)|(?:_del))?";
 
   /** Regex that will work for hfiles */
   private static final Pattern HFILE_NAME_PATTERN =
     Pattern.compile("^(" + HFILE_NAME_REGEX + ")");
+
+  /**
+   * A non-capture group, for del files, so that this can be embedded.
+   * A del file has (_del) as suffix.
+   */
+  public static final String DELFILE_NAME_REGEX = "[0-9a-f]+(?:_del)";
+
+  /** Regex that will work for del files */
+  private static final Pattern DELFILE_NAME_PATTERN =
+    Pattern.compile("^(" + DELFILE_NAME_REGEX + ")");
 
   /**
    * Regex that will work for straight reference names (<hfile>.<parentEncRegion>)
@@ -85,6 +96,9 @@ public class StoreFileInfo {
   private final Path initialPath;
 
   private RegionCoprocessorHost coprocessorHost;
+
+  // timestamp on when the file was created, is 0 and ignored for reference or link files
+  private long createdTimestamp;
 
   /**
    * Create a Store File Info
@@ -121,6 +135,7 @@ public class StoreFileInfo {
               " reference to " + referencePath);
     } else if (isHFile(p)) {
       // HFile
+      this.createdTimestamp = fs.getFileStatus(initialPath).getModificationTime();
       this.reference = null;
       this.link = null;
     } else {
@@ -171,6 +186,7 @@ public class StoreFileInfo {
     this.fs = fs;
     this.conf = conf;
     this.initialPath = fileStatus.getPath();
+    this.createdTimestamp = fileStatus.getModificationTime();
     this.reference = reference;
     this.link = null;
   }
@@ -373,6 +389,23 @@ public class StoreFileInfo {
 
   /**
    * @param path Path to check.
+   * @return True if the path has format of a del file.
+   */
+  public static boolean isDelFile(final Path path) {
+    return isDelFile(path.getName());
+  }
+
+  /**
+   * @param fileName Sting version of path to validate.
+   * @return True if the file name has format of a del file.
+   */
+  public static boolean isDelFile(final String fileName) {
+    Matcher m = DELFILE_NAME_PATTERN.matcher(fileName);
+    return m.matches() && m.groupCount() > 0;
+  }
+
+  /**
+   * @param path Path to check.
    * @return True if the path has format of a HStoreFile reference.
    */
   public static boolean isReference(final Path path) {
@@ -386,6 +419,13 @@ public class StoreFileInfo {
   public static boolean isReference(final String name) {
     Matcher m = REF_NAME_PATTERN.matcher(name);
     return m.matches() && m.groupCount() > 1;
+  }
+
+  /**
+   * @return timestamp when this file was created (as returned by filesystem)
+   */
+  public long getCreatedTimestamp() {
+    return createdTimestamp;
   }
 
   /*

@@ -74,6 +74,7 @@ public class AddColumnFamilyProcedure
     this.tableName = tableName;
     this.cfDescriptor = cfDescriptor;
     this.user = env.getRequestUser().getUGI();
+    this.setOwner(this.user.getShortUserName());
     this.unmodifiedHTableDescriptor = null;
     this.regionInfoList = null;
     this.traceEnabled = null;
@@ -235,8 +236,7 @@ public class AddColumnFamilyProcedure
     } else {
       sb.append("Unknown");
     }
-    sb.append(") user=");
-    sb.append(user);
+    sb.append(")");
   }
 
   @Override
@@ -312,7 +312,7 @@ public class AddColumnFamilyProcedure
       // Remove the column family from file system and update the table descriptor to
       // the before-add-column-family-state
       MasterDDLOperationHelper.deleteColumnFamilyFromFileSystem(env, tableName,
-        getRegionInfoList(env), cfDescriptor.getName());
+        getRegionInfoList(env), cfDescriptor.getName(), cfDescriptor.isMobEnabled());
 
       env.getMasterServices().getTableDescriptors().add(unmodifiedHTableDescriptor);
 

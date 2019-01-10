@@ -25,7 +25,7 @@
   <parent>
     <artifactId>hbase</artifactId>
     <groupId>org.apache.hbase</groupId>
-    <version>1.1.2</version>
+    <version>1.1.2.2.6.2.69-1</version>
     <relativePath>..</relativePath>
   </parent>
   <artifactId>hbase-rest</artifactId>
@@ -264,8 +264,8 @@
       <artifactId>commons-cli</artifactId>
     </dependency>
     <dependency>
-      <groupId>commons-httpclient</groupId>
-      <artifactId>commons-httpclient</artifactId>
+      <groupId>org.apache.httpcomponents</groupId>
+      <artifactId>httpcore</artifactId>
     </dependency>
     <dependency>
       <groupId>commons-lang</groupId>
@@ -360,6 +360,8 @@
                       <include>CellMessage.proto</include>
                       <include>CellSetMessage.proto</include>
                       <include>ColumnSchemaMessage.proto</include>
+                      <include>NamespacesMessage.proto</include>
+                      <include>NamespacePropertiesMessage.proto</include>
                       <include>ScannerMessage.proto</include>
                       <include>StorageClusterStatusMessage.proto</include>
                       <include>TableInfoMessage.proto</include>
@@ -397,6 +399,12 @@
         <dependency>
           <groupId>org.apache.hadoop</groupId>
           <artifactId>hadoop-common</artifactId>
+          <exclusions>
+            <exclusion>
+              <groupId>commons-httpclient</groupId>
+              <artifactId>commons-httpclient</artifactId>
+            </exclusion>
+          </exclusions>
         </dependency>
         <dependency>
           <groupId>org.apache.hadoop</groupId>

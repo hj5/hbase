@@ -17,6 +17,12 @@
  */
 package org.apache.hadoop.hbase.mapreduce;
 
+import java.io.IOException;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.Map;
+import java.util.TreeMap;
+
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -38,6 +44,7 @@ import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.regionserver.wal.WALCellCodec;
 import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.wal.WALKey;
@@ -48,12 +55,6 @@ import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.util.GenericOptionsParser;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
-
-import java.io.IOException;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.Map;
-import java.util.TreeMap;
 
 /**
  * A tool to replay WAL files as a M/R job.
@@ -70,10 +71,10 @@ import java.util.TreeMap;
 public class WALPlayer extends Configured implements Tool {
   final static Log LOG = LogFactory.getLog(WALPlayer.class);
   final static String NAME = "WALPlayer";
-  final static String BULK_OUTPUT_CONF_KEY = "wal.bulk.output";
-  final static String TABLES_KEY = "wal.input.tables";
-  final static String TABLE_MAP_KEY = "wal.input.tablesmap";
-
+  public final static String BULK_OUTPUT_CONF_KEY = "wal.bulk.output";
+  public final static String TABLES_KEY = "wal.input.tables";
+  public final static String TABLE_MAP_KEY = "wal.input.tablesmap";
+  public final static String INPUT_FILES_SEPARATOR_KEY = "wal.input.separator";
   // This relies on Hadoop Configuration to handle warning about deprecated configs and
   // to set the correct non-deprecated configs when an old one shows up.
   static {
@@ -84,12 +85,15 @@ public class WALPlayer extends Configured implements Tool {
     Configuration.addDeprecation(HLogInputFormat.END_TIME_KEY, WALInputFormat.END_TIME_KEY);
   }
 
+  public WALPlayer(){
+  }
+
   /**
    * A mapper that just writes out KeyValues.
    * This one can be used together with {@link KeyValueSortReducer}
    */
   static class WALKeyValueMapper
-  extends Mapper<WALKey, WALEdit, ImmutableBytesWritable, KeyValue> {
+    extends Mapper<WALKey, WALEdit, ImmutableBytesWritable, KeyValue> {
     private byte[] table;
 
     @Override
@@ -127,8 +131,9 @@ public class WALPlayer extends Configured implements Tool {
    * a running HBase instance.
    */
   protected static class WALMapper
-  extends Mapper<WALKey, WALEdit, ImmutableBytesWritable, Mutation> {
+    extends Mapper<WALKey, WALEdit, ImmutableBytesWritable, Mutation> {
     private Map<TableName, TableName> tables = new TreeMap<TableName, TableName>();
+
 
     @Override
     public void map(WALKey key, WALEdit value, Context context)
@@ -142,6 +147,7 @@ public class WALPlayer extends Configured implements Tool {
           Put put = null;
           Delete del = null;
           Cell lastCell = null;
+
           for (Cell cell : value.getCells()) {
             // filtering WAL meta entries
             if (WALEdit.isMetaEditFamily(cell.getFamily())) continue;
@@ -155,8 +161,12 @@ public class WALPlayer extends Configured implements Tool {
               if (lastCell == null || lastCell.getTypeByte() != cell.getTypeByte()
                   || !CellUtil.matchingRow(lastCell, cell)) {
                 // row or type changed, write out aggregate KVs.
-                if (put != null) context.write(tableOut, put);
-                if (del != null) context.write(tableOut, del);
+                if (put != null) {
+                  context.write(tableOut, put);
+                }
+                if (del != null) {
+                  context.write(tableOut, del);
+                }
                 if (CellUtil.isDelete(cell)) {
                   del = new Delete(cell.getRow());
                 } else {
@@ -172,8 +182,12 @@ public class WALPlayer extends Configured implements Tool {
             lastCell = cell;
           }
           // write residual KVs
-          if (put != null) context.write(tableOut, put);
-          if (del != null) context.write(tableOut, del);
+          if (put != null) {
+            context.write(tableOut, put);
+          }
+          if (del != null) {
+            context.write(tableOut, del);
+          }
         }
       } catch (InterruptedException e) {
         e.printStackTrace();
@@ -181,7 +195,8 @@ public class WALPlayer extends Configured implements Tool {
     }
 
     /**
-     * @param cell
+     * Filter cell
+     * @param cell cell
      * @return Return true if we are to emit this cell.
      */
     protected boolean filter(Context context, final Cell cell) {
@@ -189,14 +204,25 @@ public class WALPlayer extends Configured implements Tool {
     }
 
     @Override
+    protected void
+        cleanup(Mapper<WALKey, WALEdit, ImmutableBytesWritable, Mutation>.Context context)
+            throws IOException, InterruptedException {
+      super.cleanup(context);
+    }
+
+    @Override
     public void setup(Context context) throws IOException {
       String[] tableMap = context.getConfiguration().getStrings(TABLE_MAP_KEY);
       String[] tablesToUse = context.getConfiguration().getStrings(TABLES_KEY);
-      if (tablesToUse == null && tableMap == null) {
+
+      if (tableMap == null) {
+        tableMap = tablesToUse;
+      }
+      if (tablesToUse == null) {
         // Then user wants all tables.
-      } else if (tablesToUse == null || tableMap == null || tablesToUse.length != tableMap.length) {
-        // this can only happen when WALMapper is used directly by a class other than WALPlayer
-        throw new IOException("No tables or incorrect table mapping specified.");
+      } else if (tablesToUse.length != tableMap.length) {
+         // this can only happen when WALMapper is used directly by a class other than WALPlayer
+        throw new IOException("Incorrect table mapping specified.");
       }
       int i = 0;
       if (tablesToUse != null) {
@@ -217,7 +243,9 @@ public class WALPlayer extends Configured implements Tool {
 
   void setupTime(Configuration conf, String option) throws IOException {
     String val = conf.get(option);
-    if (null == val) return;
+    if (null == val) {
+      return;
+    }
     long ms;
     try {
       // first try to parse in user friendly form
@@ -247,7 +275,7 @@ public class WALPlayer extends Configured implements Tool {
     Configuration conf = getConf();
     setupTime(conf, HLogInputFormat.START_TIME_KEY);
     setupTime(conf, HLogInputFormat.END_TIME_KEY);
-    Path inputDir = new Path(args[0]);
+    String inputDirs = args[0];
     String[] tables = args[1].split(",");
     String[] tableMap;
     if (args.length > 2) {
@@ -261,9 +289,9 @@ public class WALPlayer extends Configured implements Tool {
     }
     conf.setStrings(TABLES_KEY, tables);
     conf.setStrings(TABLE_MAP_KEY, tableMap);
-    Job job = new Job(conf, NAME + "_" + inputDir);
+    conf.set(FileInputFormat.INPUT_DIR, inputDirs);
+    Job job = new Job(conf, NAME + "_" + System.currentTimeMillis());
     job.setJarByClass(WALPlayer.class);
-    FileInputFormat.setInputPaths(job, inputDir);
     job.setInputFormatClass(WALInputFormat.class);
     job.setMapOutputKeyClass(ImmutableBytesWritable.class);
     String hfileOutPath = conf.get(BULK_OUTPUT_CONF_KEY);
@@ -283,6 +311,8 @@ public class WALPlayer extends Configured implements Tool {
           RegionLocator regionLocator = conn.getRegionLocator(tableName)) {
         HFileOutputFormat2.configureIncrementalLoad(job, table.getTableDescriptor(), regionLocator);
       }
+      LOG.debug("success configuring load incremental job");
+
       TableMapReduceUtil.addDependencyJars(job.getConfiguration(),
           com.google.common.base.Preconditions.class);
     } else {
@@ -294,10 +324,19 @@ public class WALPlayer extends Configured implements Tool {
       // No reducers.
       job.setNumReduceTasks(0);
     }
+    String codecCls = WALCellCodec.getWALCellCodecClass(conf);
+    try {
+      TableMapReduceUtil.addDependencyJars(job.getConfiguration(), Class.forName(codecCls));
+      LOG.debug("tmpjars: " + job.getConfiguration().get("tmpjars"));
+    } catch (Exception e) {
+      throw new IOException("Cannot determine wal codec class " + codecCls, e);
+    }
     return job;
   }
 
-  /*
+
+  /**
+   * Print usage
    * @param errorMsg Error message.  Can be null.
    */
   private void usage(final String errorMsg) {
@@ -307,7 +346,8 @@ public class WALPlayer extends Configured implements Tool {
     System.err.println("Usage: " + NAME + " [options] <wal inputdir> <tables> [<tableMappings>]");
     System.err.println("Read all WAL entries for <tables>.");
     System.err.println("If no tables (\"\") are specific, all tables are imported.");
-    System.err.println("(Careful, even -ROOT- and hbase:meta entries will be imported in that case.)");
+    System.err.println("(Careful, even -ROOT- and hbase:meta entries will be imported"+
+      " in that case.)");
     System.err.println("Otherwise <tables> is a comma separated list of tables.\n");
     System.err.println("The WAL entries can be mapped to new set of tables via <tableMapping>.");
     System.err.println("<tableMapping> is a command separated list of targettables.");

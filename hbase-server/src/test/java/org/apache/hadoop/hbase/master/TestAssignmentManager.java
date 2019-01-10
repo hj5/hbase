@@ -64,7 +64,7 @@ import org.apache.hadoop.hbase.ipc.PayloadCarryingRpcController;
 import org.apache.hadoop.hbase.master.RegionState.State;
 import org.apache.hadoop.hbase.master.TableLockManager.NullTableLockManager;
 import org.apache.hadoop.hbase.master.balancer.LoadBalancerFactory;
-import org.apache.hadoop.hbase.master.balancer.SimpleLoadBalancer;
+import org.apache.hadoop.hbase.master.balancer.StochasticLoadBalancer;
 import org.apache.hadoop.hbase.master.handler.EnableTableHandler;
 import org.apache.hadoop.hbase.master.handler.ServerShutdownHandler;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
@@ -112,6 +112,8 @@ public class TestAssignmentManager {
   private static final HBaseTestingUtility HTU = new HBaseTestingUtility();
   private static final ServerName SERVERNAME_A =
       ServerName.valueOf("example.org", 1234, 5678);
+  private static final ServerName SERVERNAME_AA =
+      ServerName.valueOf("example.org", 1234, 9999);
   private static final ServerName SERVERNAME_B =
       ServerName.valueOf("example.org", 0, 5678);
   private static final HRegionInfo REGIONINFO =
@@ -487,6 +489,33 @@ public class TestAssignmentManager {
   }
 
   /**
+   * Run a simple server shutdown handler after the same server restarts.
+   * @throws KeeperException
+   * @throws IOException
+   */
+  @Test (timeout=180000)
+  public void testShutdownHandlerWithRestartedServer()
+      throws KeeperException, IOException, CoordinatedStateException, ServiceException {
+    // Create and startup an executor.  This is used by AssignmentManager
+    // handling zk callbacks.
+    ExecutorService executor = startupMasterExecutor("testShutdownHandlerWithRestartedServer");
+
+    // Create an AM.
+    AssignmentManagerWithExtrasForTesting am =
+      setUpMockedAssignmentManager(this.server, this.serverManager);
+    am.getRegionStates().regionOnline(REGIONINFO, SERVERNAME_A);
+    am.getTableStateManager().setTableState(REGIONINFO.getTable(), Table.State.ENABLED);
+    try {
+      processServerShutdownHandler(am, false, true);
+    } finally {
+      executor.shutdown();
+      am.shutdown();
+      // Clean up all znodes
+      ZKAssign.deleteAllNodes(this.watcher);
+    }
+  }
+
+  /**
    * To test closed region handler to remove rit and delete corresponding znode
    * if region in pending close or closing while processing shutdown of a region
    * server.(HBASE-5927).
@@ -621,6 +650,12 @@ public class TestAssignmentManager {
 
   private void processServerShutdownHandler(AssignmentManager am, boolean splitRegion)
       throws IOException, ServiceException {
+    processServerShutdownHandler(am, splitRegion, false);
+  }
+
+  private void processServerShutdownHandler(
+      AssignmentManager am, boolean splitRegion, boolean deadserverRestarted)
+      throws IOException, ServiceException {
     // Make sure our new AM gets callbacks; once registered, can't unregister.
     // Thats ok because we make a new zk watcher for each test.
     this.watcher.registerListenerFirst(am);
@@ -676,6 +711,25 @@ public class TestAssignmentManager {
       // Have it that SERVERNAME_A died.
       DeadServer deadServers = new DeadServer();
       deadServers.add(SERVERNAME_A);
+      Mockito.when(this.serverManager.isServerReachable(SERVERNAME_B)).thenReturn(true);
+      Mockito.when(this.serverManager.isServerOnline(SERVERNAME_A)).thenReturn(false);
+      final Map<ServerName, ServerLoad> onlineServers = new HashMap<ServerName, ServerLoad>();
+      onlineServers.put(SERVERNAME_B, ServerLoad.EMPTY_SERVERLOAD);
+      if (deadserverRestarted) {
+        // Now make the same server (same host name and port) online again with a different
+        // start code.
+        Mockito.when(this.serverManager.isServerOnline(SERVERNAME_AA)).thenReturn(true);
+        Mockito.when(this.serverManager.isServerReachable(SERVERNAME_AA)).thenReturn(true);
+        Mockito.when(
+          this.serverManager.isServerWithSameHostnamePortOnline(SERVERNAME_A)).thenReturn(true);
+        onlineServers.put(SERVERNAME_AA, ServerLoad.EMPTY_SERVERLOAD);
+      }
+      Mockito.when(this.serverManager.getOnlineServersList()).thenReturn(
+          new ArrayList<ServerName>(onlineServers.keySet()));
+      Mockito.when(this.serverManager.getOnlineServers()).thenReturn(onlineServers);
+      List<ServerName> avServers = new ArrayList<ServerName>();
+      avServers.addAll(onlineServers.keySet());
+      Mockito.when(this.serverManager.createDestinationServersList()).thenReturn(avServers);
       // I need a services instance that will return the AM
       MasterFileSystem fs = Mockito.mock(MasterFileSystem.class);
       Mockito.doNothing().when(fs).setLogRecoveryMode();
@@ -852,18 +906,19 @@ public class TestAssignmentManager {
       Mocking.waitForRegionPendingOpenInRIT(am, REGIONINFO.getEncodedName());
     } finally {
       this.server.getConfiguration().setClass(
-          HConstants.HBASE_MASTER_LOADBALANCER_CLASS, SimpleLoadBalancer.class,
+          HConstants.HBASE_MASTER_LOADBALANCER_CLASS, StochasticLoadBalancer.class,
           LoadBalancer.class);
       am.getExecutorService().shutdown();
       am.shutdown();
     }
   }
 
+
   /**
    * Mocked load balancer class used in the testcase to make sure that the testcase waits until
    * random assignment is called and the gate variable is set to true.
    */
-  public static class MockedLoadBalancer extends SimpleLoadBalancer {
+  public static class MockedLoadBalancer extends StochasticLoadBalancer {
     private AtomicBoolean gate;
 
     public void setGateVariable(AtomicBoolean gate) {
@@ -885,6 +940,66 @@ public class TestAssignmentManager {
     }
   }
 
+  /*
+   * Tests the scenario
+   * - a regionserver (SERVERNAME_A) owns a region (hence the meta would have
+   *   the SERVERNAME_A as the host for the region),
+   * - SERVERNAME_A goes down
+   * - one of the affected regions is assigned to a live regionserver (SERVERNAME_B) but that
+   *   assignment somehow fails. The region ends up in the FAILED_OPEN state on ZK
+   * - [Issue that the patch on HBASE-13330 fixes] when the master is restarted,
+   *   the SSH for SERVERNAME_A rightly thinks that the region is now on transition on
+   *   SERVERNAME_B. But the owner for the region is still SERVERNAME_A in the AM's states.
+   *   The AM thinks that the SSH for SERVERNAME_A will assign the region. The region remains
+   *   unassigned for ever.
+   */
+  @Test(timeout = 60000)
+  public void testAssignmentOfRegionInSSHAndInFailedOpenState() throws IOException,
+  KeeperException, ServiceException, CoordinatedStateException, InterruptedException {
+    AssignmentManagerWithExtrasForTesting am = setUpMockedAssignmentManager(
+        this.server, this.serverManager);
+    ZKAssign.createNodeOffline(this.watcher, REGIONINFO, SERVERNAME_B);
+    int v = ZKAssign.getVersion(this.watcher, REGIONINFO);
+    ZKAssign.transitionNode(this.watcher, REGIONINFO, SERVERNAME_B,
+        EventType.M_ZK_REGION_OFFLINE, EventType.RS_ZK_REGION_FAILED_OPEN, v);
+    Mockito.when(this.serverManager.isServerOnline(SERVERNAME_B)).thenReturn(true);
+    Mockito.when(this.serverManager.isServerReachable(SERVERNAME_B)).thenReturn(true);
+    Mockito.when(this.serverManager.isServerOnline(SERVERNAME_A)).thenReturn(false);
+    DeadServer deadServers = new DeadServer();
+    deadServers.add(SERVERNAME_A);
+    Mockito.when(this.serverManager.getDeadServers()).thenReturn(deadServers);
+    final Map<ServerName, ServerLoad> onlineServers = new HashMap<ServerName, ServerLoad>();
+    onlineServers.put(SERVERNAME_B, ServerLoad.EMPTY_SERVERLOAD);
+    Mockito.when(this.serverManager.getOnlineServersList()).thenReturn(
+        new ArrayList<ServerName>(onlineServers.keySet()));
+    Mockito.when(this.serverManager.getOnlineServers()).thenReturn(onlineServers);
+    am.gate.set(false);
+    // join the cluster - that's when the AM is really kicking in after a restart
+    am.joinCluster();
+    while (!am.gate.get()) {
+      Thread.sleep(10);
+    }
+    assertTrue(am.getRegionStates().getRegionState(REGIONINFO).getState()
+        == RegionState.State.PENDING_OPEN);
+    am.shutdown();
+  }
+
+  @Test(timeout = 600000)
+  public void testAssignmentOfRegionRITWithOffline() throws IOException,
+      KeeperException, ServiceException, CoordinatedStateException, InterruptedException {
+    AssignmentManagerWithExtrasForTesting am = setUpMockedAssignmentManager(
+        this.server, this.serverManager);
+    ZKAssign.createNodeOffline(this.watcher, REGIONINFO, SERVERNAME_B);
+    am.gate.set(false);
+    // join the cluster - that's when the AM is really kicking in after a restart
+    am.joinCluster();
+    while (!am.gate.get()) {
+      Thread.sleep(10);
+    }
+    assertTrue(am.getRegionStates().getRegionState(REGIONINFO).getState()
+        == RegionState.State.PENDING_OPEN);
+    am.shutdown();
+  }
   /**
    * Test the scenario when the master is in failover and trying to process a
    * region which is in Opening state on a dead RS. Master will force offline the
@@ -981,7 +1096,7 @@ public class TestAssignmentManager {
             Table.State.DISABLED));
     } finally {
       this.server.getConfiguration().setClass(
-        HConstants.HBASE_MASTER_LOADBALANCER_CLASS, SimpleLoadBalancer.class,
+        HConstants.HBASE_MASTER_LOADBALANCER_CLASS, StochasticLoadBalancer.class,
         LoadBalancer.class);
       am.getTableStateManager().setTableState(REGIONINFO.getTable(),
         Table.State.ENABLED);
@@ -1297,6 +1412,16 @@ public class TestAssignmentManager {
         this.gate.set(true);
       }
     }
+    @Override
+    public void assign(RegionState state,
+        boolean setOfflineInZK, final boolean forceNewPlan) {
+      if (enabling) {
+        assignmentCount++;
+      } else {
+        super.assign(state, setOfflineInZK, forceNewPlan);
+        this.gate.set(true);
+      }
+    }
 
     @Override
     boolean assign(ServerName destination, List<HRegionInfo> regions)
@@ -1309,6 +1434,14 @@ public class TestAssignmentManager {
         return true;
       }
       return super.assign(destination, regions);
+    }
+
+    @Override
+    public void assign(Map<HRegionInfo, ServerName> regionServerMap)
+        throws IOException, InterruptedException {
+      assignInvoked = (regionServerMap != null && regionServerMap.size() > 0);
+      super.assign(regionServerMap);
+      this.gate.set(true);
     }
 
     @Override

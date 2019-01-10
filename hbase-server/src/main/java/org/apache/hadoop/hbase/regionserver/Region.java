@@ -22,6 +22,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
 import org.apache.hadoop.hbase.HDFSBlocksDistribution;
@@ -469,7 +470,6 @@ public interface Region extends ConfigurationObserver {
    * pre/post processing of a given bulkload call
    */
   interface BulkLoadListener {
-
     /**
      * Called before an HFile is actually loaded
      * @param family family being loaded to
@@ -477,7 +477,8 @@ public interface Region extends ConfigurationObserver {
      * @return final path to be used for actual loading
      * @throws IOException
      */
-    String prepareBulkLoad(byte[] family, String srcPath) throws IOException;
+    String prepareBulkLoad(byte[] family, String srcPath, boolean copyFile)
+        throws IOException;
 
     /**
      * Called after a successful HFile load
@@ -504,11 +505,26 @@ public interface Region extends ConfigurationObserver {
    * @param bulkLoadListener Internal hooks enabling massaging/preparation of a
    * file about to be bulk loaded
    * @param assignSeqId
-   * @return true if successful, false if failed recoverably
+   * @return Map from family to List of store file paths if successful, null if failed recoverably
    * @throws IOException if failed unrecoverably.
    */
-  boolean bulkLoadHFiles(Collection<Pair<byte[], String>> familyPaths, boolean assignSeqId,
-      BulkLoadListener bulkLoadListener) throws IOException;
+  Map<byte[], List<Path>> bulkLoadHFiles(Collection<Pair<byte[], String>> familyPaths,
+      boolean assignSeqId, BulkLoadListener bulkLoadListener) throws IOException;
+
+  /**
+   * Attempts to atomically load a group of hfiles.  This is critical for loading
+   * rows with multiple column families atomically.
+   *
+   * @param familyPaths List of Pair&lt;byte[] column family, String hfilePath&gt;
+   * @param assignSeqId
+   * @param bulkLoadListener Internal hooks enabling massaging/preparation of a
+   * file about to be bulk loaded
+   * @param copyFile always copy hfiles if true
+   * @return Map from family to List of store file paths if successful, null if failed recoverably
+   * @throws IOException if failed unrecoverably.
+   */
+  Map<byte[], List<Path>> bulkLoadHFiles(Collection<Pair<byte[], String>> familyPaths,
+      boolean assignSeqId, BulkLoadListener bulkLoadListener, boolean copyFile) throws IOException;
 
   ///////////////////////////////////////////////////////////////////////////
   // Coprocessors

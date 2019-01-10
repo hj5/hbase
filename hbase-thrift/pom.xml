@@ -23,7 +23,7 @@
   <parent>
     <artifactId>hbase</artifactId>
     <groupId>org.apache.hbase</groupId>
-    <version>1.1.2</version>
+    <version>1.1.2.2.6.2.69-1</version>
     <relativePath>..</relativePath>
   </parent>
   <artifactId>hbase-thrift</artifactId>
@@ -380,7 +380,7 @@
       Profile for regenerating the thrift java classes.
       The generated files are to be committed to version control.
       Activate using:
-       mvn compile -Dcompile-thrift
+       mvn compile -Pcompile-thrift
     -->
     <profile>
       <id>compile-thrift</id>
@@ -401,12 +401,12 @@
                     <requireProperty>
                       <property>thrift.version</property>
                       <message>"The Thrift version must be specified."</message>
-                      <regex>0\.9\.0</regex>
+                      <regex>0\.9\.3</regex>
                       <regexMessage>
 -
 -
 [FATAL] ==========================================================================================
-[FATAL] HBase Thrift requires the thrift generator version 0.9.0.
+[FATAL] HBase Thrift requires the thrift generator version 0.9.3.
 [FATAL] Setting it to something else needs to be reviewed for wire and behavior compatibility.
 [FATAL] ==========================================================================================
 -

@@ -28,26 +28,57 @@ public class MetricsRegionServerSourceFactoryImpl implements MetricsRegionServer
   public static enum FactoryStorage {
     INSTANCE;
     private Object aggLock = new Object();
-    private MetricsRegionAggregateSourceImpl aggImpl;
+    private MetricsRegionAggregateSourceImpl regionAggImpl;
+    private MetricsUserAggregateSourceImpl userAggImpl;
+    private MetricsTableAggregateSourceImpl tblAggImpl;
   }
 
-  private synchronized MetricsRegionAggregateSourceImpl getAggregate() {
+  private synchronized MetricsRegionAggregateSourceImpl getRegionAggregate() {
     synchronized (FactoryStorage.INSTANCE.aggLock) {
-      if (FactoryStorage.INSTANCE.aggImpl == null) {
-        FactoryStorage.INSTANCE.aggImpl = new MetricsRegionAggregateSourceImpl();
+      if (FactoryStorage.INSTANCE.regionAggImpl == null) {
+        FactoryStorage.INSTANCE.regionAggImpl = new MetricsRegionAggregateSourceImpl();
       }
-      return FactoryStorage.INSTANCE.aggImpl;
+      return FactoryStorage.INSTANCE.regionAggImpl;
     }
   }
 
+  public synchronized MetricsUserAggregateSourceImpl getUserAggregate() {
+    synchronized (FactoryStorage.INSTANCE.aggLock) {
+      if (FactoryStorage.INSTANCE.userAggImpl == null) {
+        FactoryStorage.INSTANCE.userAggImpl = new MetricsUserAggregateSourceImpl();
+      }
+      return FactoryStorage.INSTANCE.userAggImpl;
+    }
+  }
 
   @Override
-  public synchronized MetricsRegionServerSource createServer(MetricsRegionServerWrapper regionServerWrapper) {
+  public synchronized MetricsTableAggregateSourceImpl getTableAggregate() {
+    synchronized (FactoryStorage.INSTANCE.aggLock) {
+      if (FactoryStorage.INSTANCE.tblAggImpl == null) {
+        FactoryStorage.INSTANCE.tblAggImpl = new MetricsTableAggregateSourceImpl();
+      }
+      return FactoryStorage.INSTANCE.tblAggImpl;
+    }
+  }
+
+  @Override
+  public synchronized MetricsRegionServerSource createServer(
+      MetricsRegionServerWrapper regionServerWrapper) {
     return new MetricsRegionServerSourceImpl(regionServerWrapper);
   }
 
   @Override
   public MetricsRegionSource createRegion(MetricsRegionWrapper wrapper) {
-    return new MetricsRegionSourceImpl(wrapper, getAggregate());
+    return new MetricsRegionSourceImpl(wrapper, getRegionAggregate());
+  }
+
+  @Override
+  public MetricsUserSource createUser(String shortUserName) {
+    return new MetricsUserSourceImpl(shortUserName, getUserAggregate());
+  }
+
+  @Override
+  public MetricsTableSource createTable(String table, MetricsTableWrapperAggregate wrapper) {
+    return new MetricsTableSourceImpl(table, getTableAggregate(), wrapper);
   }
 }

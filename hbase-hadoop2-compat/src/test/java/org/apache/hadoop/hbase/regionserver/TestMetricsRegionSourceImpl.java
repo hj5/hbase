@@ -42,8 +42,10 @@ public class TestMetricsRegionSourceImpl {
     assertEquals(one.hashCode(), oneClone.hashCode());
     assertNotEquals(one, two);
 
-    assertTrue( one.compareTo(two) < 0);
-    assertTrue( two.compareTo(one) > 0);
+    assertTrue( one.compareTo(two) != 0);
+    assertTrue( two.compareTo(one) != 0);
+    assertTrue( two.compareTo(one) != one.compareTo(two));
+    assertTrue( two.compareTo(two) == 0);
   }
 
 
@@ -59,8 +61,6 @@ public class TestMetricsRegionSourceImpl {
     private String regionName;
 
     public RegionWrapperStub(String regionName) {
-
-
       this.regionName = regionName;
     }
 
@@ -105,6 +105,26 @@ public class TestMetricsRegionSourceImpl {
     }
 
     @Override
+    public long getMaxStoreFileAge() {
+      return 0;
+    }
+
+    @Override
+    public long getMinStoreFileAge() {
+      return 0;
+    }
+
+    @Override
+    public long getAvgStoreFileAge() {
+      return 0;
+    }
+
+    @Override
+    public long getNumReferenceFiles() {
+      return 0;
+    }
+
+    @Override
     public long getWriteRequestCount() {
       return 0;
     }
@@ -125,8 +145,21 @@ public class TestMetricsRegionSourceImpl {
     }
 
     @Override
-    public Map<String, DescriptiveStatistics> getCoprocessorExecutionStatistics() {
-      return null;
+    public int getRegionHashCode() {
+      return regionName.hashCode();
+    }
+
+    /**
+     * Always return 0 for testing
+     */
+    @Override
+    public int getReplicaId() {
+      return 0;
+    }
+
+    @Override
+    public long getTotalRequestCount() {
+      return 0;
     }
   }
 }

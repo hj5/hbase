@@ -232,9 +232,9 @@ public class TestMasterFailover {
 
     log("Regions in hbase:meta and namespace have been created");
 
-    // at this point we only expect 4 regions to be assigned out
-    // (catalogs and namespace, + 2 merging regions)
-    assertEquals(4, cluster.countServedRegions());
+    // at this point we expect at least 4 regions to be assigned out
+    // (meta and namespace, + 2 merging regions)
+    assertTrue(4 <= cluster.countServedRegions());
 
     // Move merging regions to the same region server
     AssignmentManager am = master.getAssignmentManager();
@@ -348,7 +348,7 @@ public class TestMasterFailover {
     region = enabledRegions.remove(0);
     regionsThatShouldBeOnline.add(region);
     ZKAssign.createNodeOffline(zkw, region, serverName);
-    ProtobufUtil.openRegion(hrs.getRSRpcServices(), hrs.getServerName(), region);
+    ProtobufUtil.openRegion(null, hrs.getRSRpcServices(), hrs.getServerName(), region);
     while (true) {
       byte [] bytes = ZKAssign.getData(zkw, region.getEncodedName());
       RegionTransition rt = RegionTransition.parseFrom(bytes);
@@ -363,7 +363,7 @@ public class TestMasterFailover {
     region = disabledRegions.remove(0);
     regionsThatShouldBeOffline.add(region);
     ZKAssign.createNodeOffline(zkw, region, serverName);
-    ProtobufUtil.openRegion(hrs.getRSRpcServices(), hrs.getServerName(), region);
+    ProtobufUtil.openRegion(null, hrs.getRSRpcServices(), hrs.getServerName(), region);
     while (true) {
       byte [] bytes = ZKAssign.getData(zkw, region.getEncodedName());
       RegionTransition rt = RegionTransition.parseFrom(bytes);
@@ -507,6 +507,9 @@ public class TestMasterFailover {
     HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
     Configuration conf = TEST_UTIL.getConfiguration();
     conf.setBoolean("hbase.assignment.usezk", true);
+    // The test depends on namespace region is online, therefore, we have to
+    // wait for namespace manager starting.
+    conf.setBoolean("hbase.master.start.wait.for.namespacemanager", true);
 
     conf.setInt(ServerManager.WAIT_ON_REGIONSERVERS_MINTOSTART, 1);
     conf.setInt(ServerManager.WAIT_ON_REGIONSERVERS_MAXTOSTART, 2);
@@ -578,8 +581,8 @@ public class TestMasterFailover {
 
     log("Regions in hbase:meta and Namespace have been created");
 
-    // at this point we only expect 2 regions to be assigned out (catalogs and namespace  )
-    assertEquals(2, cluster.countServedRegions());
+    // at this point we expect at least 2 regions to be assigned out (meta and namespace)
+    assertTrue(2 <= cluster.countServedRegions());
 
     // The first RS will stay online
     List<RegionServerThread> regionservers =
@@ -751,7 +754,7 @@ public class TestMasterFailover {
     region = enabledRegions.remove(0);
     regionsThatShouldBeOnline.add(region);
     ZKAssign.createNodeOffline(zkw, region, deadServerName);
-    ProtobufUtil.openRegion(hrsDead.getRSRpcServices(),
+    ProtobufUtil.openRegion(null, hrsDead.getRSRpcServices(),
       hrsDead.getServerName(), region);
     while (true) {
       byte [] bytes = ZKAssign.getData(zkw, region.getEncodedName());
@@ -768,7 +771,7 @@ public class TestMasterFailover {
     region = disabledRegions.remove(0);
     regionsThatShouldBeOffline.add(region);
     ZKAssign.createNodeOffline(zkw, region, deadServerName);
-    ProtobufUtil.openRegion(hrsDead.getRSRpcServices(),
+    ProtobufUtil.openRegion(null, hrsDead.getRSRpcServices(),
       hrsDead.getServerName(), region);
     while (true) {
       byte [] bytes = ZKAssign.getData(zkw, region.getEncodedName());
@@ -789,7 +792,7 @@ public class TestMasterFailover {
     region = enabledRegions.remove(0);
     regionsThatShouldBeOnline.add(region);
     ZKAssign.createNodeOffline(zkw, region, deadServerName);
-    ProtobufUtil.openRegion(hrsDead.getRSRpcServices(),
+    ProtobufUtil.openRegion(null, hrsDead.getRSRpcServices(),
       hrsDead.getServerName(), region);
     while (true) {
       byte [] bytes = ZKAssign.getData(zkw, region.getEncodedName());
@@ -808,7 +811,7 @@ public class TestMasterFailover {
     region = disabledRegions.remove(0);
     regionsThatShouldBeOffline.add(region);
     ZKAssign.createNodeOffline(zkw, region, deadServerName);
-    ProtobufUtil.openRegion(hrsDead.getRSRpcServices(),
+    ProtobufUtil.openRegion(null, hrsDead.getRSRpcServices(),
       hrsDead.getServerName(), region);
     while (true) {
       byte [] bytes = ZKAssign.getData(zkw, region.getEncodedName());
@@ -1224,9 +1227,9 @@ public class TestMasterFailover {
 
     log("Regions in hbase:meta and namespace have been created");
 
-    // at this point we only expect 3 regions to be assigned out
-    // (catalogs and namespace, + 1 online region)
-    assertEquals(3, cluster.countServedRegions());
+    // at this point we expect at least 3 regions to be assigned out
+    // (meta and namespace, + 1 online region)
+    assertTrue(3 <= cluster.countServedRegions());
     HRegionInfo hriOnline = null;
     try (RegionLocator locator =
         TEST_UTIL.getConnection().getRegionLocator(TableName.valueOf("onlineTable"))) {

@@ -43,6 +43,7 @@ import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
 import org.apache.hadoop.util.ToolRunner;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.KeeperException.Code;
+import org.apache.zookeeper.KeeperException.NoNodeException;
 import org.apache.zookeeper.ZooDefs.Ids;
 import org.apache.zookeeper.ZooDefs.Perms;
 import org.apache.zookeeper.data.ACL;
@@ -168,7 +169,7 @@ public class IntegrationTestZKAndFSPermissions extends AbstractHBaseTool {
       }
     } catch (KeeperException ke) {
       // if we are not authenticated for listChildren, it is fine.
-      if (ke.code() != Code.NOAUTH) {
+      if (ke.code() != Code.NOAUTH && ke.code() != Code.NONODE) {
         throw ke;
       }
     }
@@ -177,7 +178,15 @@ public class IntegrationTestZKAndFSPermissions extends AbstractHBaseTool {
   private void assertZnodePerms(RecoverableZooKeeper zk, String znode,
       boolean expectedWorldReadable) throws KeeperException, InterruptedException {
     Stat stat = new Stat();
-    List<ACL> acls = zk.getZooKeeper().getACL(znode, stat);
+    List<ACL> acls;
+    try {
+      acls = zk.getZooKeeper().getACL(znode, stat);
+    } catch (NoNodeException ex) {
+      LOG.debug("Caught exception for missing znode", ex);
+      // the znode is deleted. Probably it was a temporary znode (like RIT).
+      return;
+    }
+    String[] superUsers = superUser == null ? null : superUser.split(",");
 
     LOG.info("Checking ACLs for znode znode:" + znode + " acls:" + acls);
 
@@ -191,7 +200,7 @@ public class IntegrationTestZKAndFSPermissions extends AbstractHBaseTool {
         assertTrue(expectedWorldReadable);
         // assert that anyone can only read
         assertEquals(perms, Perms.READ);
-      } else if (superUser != null && new Id("sasl", superUser).equals(id)) {
+      } else if (superUsers != null && ZooKeeperWatcher.isSuperUserId(superUsers, id)) {
         // assert that super user has all the permissions
         assertEquals(perms, Perms.ALL);
       } else if (new Id("sasl", masterPrincipal).equals(id)) {

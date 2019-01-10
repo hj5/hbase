@@ -20,7 +20,34 @@
 package org.apache.hadoop.hbase.client;
 
 
+import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.CallQueueTooBigException;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.RegionLocations;
 import org.apache.hadoop.hbase.TableName;
@@ -36,6 +63,7 @@ import org.apache.hadoop.hbase.ipc.RpcControllerFactory;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Threads;
 import org.junit.Assert;
+import static org.junit.Assert.assertTrue;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
@@ -209,28 +237,35 @@ public class TestAsyncProcess {
 
   static class CallerWithFailure extends RpcRetryingCaller<MultiResponse>{
 
-    public CallerWithFailure() {
+    private final IOException e;
+
+    public CallerWithFailure(IOException e) {
       super(100, 100, 9);
+      this.e = e;
     }
 
     @Override
     public MultiResponse callWithoutRetries(RetryingCallable<MultiResponse> callable, int callTimeout)
         throws IOException, RuntimeException {
-      throw new IOException("test");
+      throw e;
     }
   }
 
+
   static class AsyncProcessWithFailure extends MyAsyncProcess {
 
-    public AsyncProcessWithFailure(ClusterConnection hc, Configuration conf) {
+    private final IOException ioe;
+
+    public AsyncProcessWithFailure(ClusterConnection hc, Configuration conf, IOException ioe) {
       super(hc, conf, true);
+      this.ioe = ioe;
       serverTrackerTimeout = 1;
     }
 
     @Override
     protected RpcRetryingCaller<MultiResponse> createCaller(MultiServerCallable<Row> callable) {
       callsCt.incrementAndGet();
-      return new CallerWithFailure();
+      return new CallerWithFailure(ioe);
     }
   }
 
@@ -822,7 +857,7 @@ public class TestAsyncProcess {
   public void testGlobalErrors() throws IOException {
     ClusterConnection conn = new MyConnectionImpl(conf);
     BufferedMutatorImpl mutator = (BufferedMutatorImpl) conn.getBufferedMutator(DUMMY_TABLE);
-    AsyncProcessWithFailure ap = new AsyncProcessWithFailure(conn, conf);
+    AsyncProcessWithFailure ap = new AsyncProcessWithFailure(conn, conf, new IOException("test"));
     mutator.ap = ap;
 
     Assert.assertNotNull(mutator.ap.createServerErrorTracker());
@@ -839,6 +874,27 @@ public class TestAsyncProcess {
     Assert.assertEquals(NB_RETRIES + 1, ap.callsCt.get());
   }
 
+
+  @Test
+  public void testCallQueueTooLarge() throws IOException {
+    ClusterConnection conn = new MyConnectionImpl(conf);
+    BufferedMutatorImpl mutator = (BufferedMutatorImpl) conn.getBufferedMutator(DUMMY_TABLE);
+    AsyncProcessWithFailure ap = new AsyncProcessWithFailure(conn, conf, new CallQueueTooBigException());
+    mutator.ap = ap;
+
+    Assert.assertNotNull(mutator.ap.createServerErrorTracker());
+
+    Put p = createPut(1, true);
+    mutator.mutate(p);
+
+    try {
+      mutator.flush();
+      Assert.fail();
+    } catch (RetriesExhaustedWithDetailsException expected) {
+    }
+    // Checking that the ErrorsServers came into play and didn't make us stop immediately
+    Assert.assertEquals(NB_RETRIES + 1, ap.callsCt.get());
+  }
   /**
    * This test simulates multiple regions on 2 servers. We should have 2 multi requests and
    *  2 threads: 1 per server, this whatever the number of regions.
@@ -1048,5 +1104,46 @@ public class TestAsyncProcess {
     p.add(DUMMY_BYTES_1, DUMMY_BYTES_1, DUMMY_BYTES_1);
 
     return p;
+  }
+
+  @Test
+  public void testWaitForMaximumCurrentTasks() throws Exception {
+    final AtomicLong tasks = new AtomicLong(0);
+    final AtomicInteger max = new AtomicInteger(0);
+    final CyclicBarrier barrier = new CyclicBarrier(2);
+    final AsyncProcess ap = new MyAsyncProcess(createHConnection(), conf);
+    Runnable runnable = new Runnable() {
+      @Override
+      public void run() {
+        try {
+          barrier.await();
+          ap.waitForMaximumCurrentTasks(max.get(), tasks, 1, null);
+        } catch (InterruptedIOException e) {
+          Assert.fail(e.getMessage());
+        } catch (InterruptedException e) {
+          // TODO Auto-generated catch block
+          e.printStackTrace();
+        } catch (BrokenBarrierException e) {
+          // TODO Auto-generated catch block
+          e.printStackTrace();
+        }
+      }
+    };
+    // First test that our runnable thread only exits when tasks is zero.
+    Thread t = new Thread(runnable);
+    t.start();
+    barrier.await();
+    t.join();
+    // Now assert we stay running if max == zero and tasks is > 0.
+    barrier.reset();
+    tasks.set(1000000);
+    t = new Thread(runnable);
+    t.start();
+    barrier.await();
+    while (tasks.get() > 0) {
+      assertTrue(t.isAlive());
+      tasks.set(tasks.get() - 1);
+    }
+    t.join();
   }
 }

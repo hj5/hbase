@@ -720,6 +720,7 @@ public class RemoteHTable implements Table {
   public boolean checkAndDelete(byte[] row, byte[] family, byte[] qualifier,
       byte[] value, Delete delete) throws IOException {
     Put put = new Put(row);
+    put.setFamilyCellMap(delete.getFamilyCellMap());
     // column to check-the-value
     put.add(new KeyValue(row, family, qualifier, value));
     CellSetModel model = buildModelFromPut(put);
@@ -856,4 +857,5 @@ public class RemoteHTable implements Table {
       CompareOp compareOp, byte[] value, RowMutations rm) throws IOException {
     throw new UnsupportedOperationException("checkAndMutate not implemented");
   }
+
 }

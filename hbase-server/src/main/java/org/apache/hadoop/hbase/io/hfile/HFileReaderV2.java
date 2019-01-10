@@ -341,7 +341,8 @@ public class HFileReaderV2 extends AbstractHFileReader {
     synchronized (metaBlockIndexReader.getRootBlockKey(block)) {
       // Check cache for block. If found return.
       long metaBlockOffset = metaBlockIndexReader.getRootBlockOffset(block);
-      BlockCacheKey cacheKey = new BlockCacheKey(name, metaBlockOffset);
+      BlockCacheKey cacheKey = new BlockCacheKey(name, metaBlockOffset,
+        this.isPrimaryReplicaReader(), BlockType.META);
 
       cacheBlock &= cacheConf.shouldCacheDataOnRead();
       if (cacheConf.isBlockCacheEnabled()) {
@@ -387,7 +388,8 @@ public class HFileReaderV2 extends AbstractHFileReader {
     // Without a cache, this synchronizing is needless overhead, but really
     // the other choice is to duplicate work (which the cache would prevent you
     // from doing).
-    BlockCacheKey cacheKey = new BlockCacheKey(name, dataBlockOffset);
+    BlockCacheKey cacheKey =
+        new BlockCacheKey(name, dataBlockOffset, this.isPrimaryReplicaReader(), expectedBlockType);
     boolean useLock = false;
     IdLock.Entry lockEntry = null;
     TraceScope traceScope = Trace.startSpan("HFileReaderV2.readBlock");
@@ -409,7 +411,7 @@ public class HFileReaderV2 extends AbstractHFileReader {
             assert cachedBlock.isUnpacked() : "Packed block leak.";
             if (cachedBlock.getBlockType().isData()) {
               if (updateCacheMetrics) {
-                HFile.dataBlockReadCnt.incrementAndGet();
+                HFile.dataBlockReadCnt.increment();
               }
               // Validate encoding type for data blocks. We include encoding
               // type in the cache key, and we expect it to match on a cache hit.
@@ -448,7 +450,7 @@ public class HFileReaderV2 extends AbstractHFileReader {
         }
 
         if (updateCacheMetrics && hfileBlock.getBlockType().isData()) {
-          HFile.dataBlockReadCnt.incrementAndGet();
+          HFile.dataBlockReadCnt.increment();
         }
 
         return unpacked;
@@ -669,9 +671,12 @@ public class HFileReaderV2 extends AbstractHFileReader {
 
         // It is important that we compute and pass onDiskSize to the block
         // reader so that it does not have to read the header separately to
-        // figure out the size.
+        // figure out the size.  Currently, we do not have a way to do this
+        // correctly in the general case however.
+        // TODO: See https://issues.apache.org/jira/browse/HBASE-14576
+        int prevBlockSize = -1;
         seekToBlock = reader.readBlock(previousBlockOffset,
-            seekToBlock.getOffset() - previousBlockOffset, cacheBlocks,
+            prevBlockSize, cacheBlocks,
             pread, isCompaction, true, BlockType.DATA, getEffectiveDataBlockEncoding());
         // TODO shortcut: seek forward in this block to the last key of the
         // block.

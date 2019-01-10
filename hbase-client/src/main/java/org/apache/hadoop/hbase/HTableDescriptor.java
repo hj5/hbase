@@ -199,8 +199,25 @@ public class HTableDescriptor implements WritableComparable<HTableDescriptor> {
   private static final ImmutableBytesWritable REGION_MEMSTORE_REPLICATION_KEY =
       new ImmutableBytesWritable(Bytes.toBytes(REGION_MEMSTORE_REPLICATION));
 
+  /**
+   * <em>INTERNAL</em> Used by shell/rest interface to access this metadata
+   * attribute which denotes if the table should be treated by region normalizer.
+   *
+   * @see #isNormalizationEnabled()
+   */
+  public static final String NORMALIZATION_ENABLED = "NORMALIZATION_ENABLED";
+  private static final ImmutableBytesWritable NORMALIZATION_ENABLED_KEY =
+    new ImmutableBytesWritable(Bytes.toBytes(NORMALIZATION_ENABLED));
+
   /** Default durability for HTD is USE_DEFAULT, which defaults to HBase-global default value */
   private static final Durability DEFAULT_DURABLITY = Durability.USE_DEFAULT;
+
+  public static final String PRIORITY = "PRIORITY";
+  private static final ImmutableBytesWritable PRIORITY_KEY =
+    new ImmutableBytesWritable(Bytes.toBytes(PRIORITY));
+
+  /** Relative priority of the table used for rpc scheduling */
+  private static final int DEFAULT_PRIORITY = HConstants.NORMAL_QOS;
 
   /*
    *  The below are ugly but better than creating them each time till we
@@ -226,6 +243,11 @@ public class HTableDescriptor implements WritableComparable<HTableDescriptor> {
   public static final boolean DEFAULT_COMPACTION_ENABLED = true;
 
   /**
+   * Constant that denotes whether the table is normalized by default.
+   */
+  public static final boolean DEFAULT_NORMALIZATION_ENABLED = false;
+
+  /**
    * Constant that denotes the maximum default size of the memstore after which
    * the contents are flushed to the store files
    */
@@ -249,6 +271,8 @@ public class HTableDescriptor implements WritableComparable<HTableDescriptor> {
         String.valueOf(DEFAULT_DEFERRED_LOG_FLUSH));
     DEFAULT_VALUES.put(DURABILITY, DEFAULT_DURABLITY.name()); //use the enum name
     DEFAULT_VALUES.put(REGION_REPLICATION, String.valueOf(DEFAULT_REGION_REPLICATION));
+    DEFAULT_VALUES.put(NORMALIZATION_ENABLED, String.valueOf(DEFAULT_NORMALIZATION_ENABLED));
+    DEFAULT_VALUES.put(PRIORITY, String.valueOf(DEFAULT_PRIORITY));
     for (String s : DEFAULT_VALUES.keySet()) {
       RESERVED_KEYWORDS.add(new ImmutableBytesWritable(Bytes.toBytes(s)));
     }
@@ -379,7 +403,7 @@ public class HTableDescriptor implements WritableComparable<HTableDescriptor> {
    */
   private void setMetaFlags(final TableName name) {
     setMetaRegion(isRootRegion() ||
-        name.equals(TableName.META_TABLE_NAME));
+      name.equals(TableName.META_TABLE_NAME));
   }
 
   /**
@@ -403,7 +427,7 @@ public class HTableDescriptor implements WritableComparable<HTableDescriptor> {
    */
   protected void setRootRegion(boolean isRoot) {
     // TODO: Make the value a boolean rather than String of boolean.
-    setValue(IS_ROOT_KEY, isRoot? TRUE: FALSE);
+    setValue(IS_ROOT_KEY, isRoot ? TRUE : FALSE);
   }
 
   /**
@@ -624,6 +648,26 @@ public class HTableDescriptor implements WritableComparable<HTableDescriptor> {
    */
   public HTableDescriptor setCompactionEnabled(final boolean isEnable) {
     setValue(COMPACTION_ENABLED_KEY, isEnable ? TRUE : FALSE);
+    return this;
+  }
+
+  /**
+   * Check if normalization enable flag of the table is true. If flag is
+   * false then no region normalizer won't attempt to normalize this table.
+   *
+   * @return true if region normalization is enabled for this table
+   */
+  public boolean isNormalizationEnabled() {
+    return isSomething(NORMALIZATION_ENABLED_KEY, DEFAULT_NORMALIZATION_ENABLED);
+  }
+
+  /**
+   * Setting the table normalization enable flag.
+   *
+   * @param isEnable True if enable normalization.
+   */
+  public HTableDescriptor setNormalizationEnabled(final boolean isEnable) {
+    setValue(NORMALIZATION_ENABLED_KEY, isEnable ? TRUE : FALSE);
     return this;
   }
 
@@ -1006,6 +1050,7 @@ public class HTableDescriptor implements WritableComparable<HTableDescriptor> {
     return compareTo((HTableDescriptor)obj) == 0;
   }
 
+
   /**
    * @see java.lang.Object#hashCode()
    */
@@ -1162,9 +1207,13 @@ public class HTableDescriptor implements WritableComparable<HTableDescriptor> {
    * Returns the configured replicas per region
    */
   public int getRegionReplication() {
-    byte[] val = getValue(REGION_REPLICATION_KEY);
+    return getIntValue(REGION_REPLICATION_KEY, DEFAULT_REGION_REPLICATION);
+  }
+
+  private int getIntValue(ImmutableBytesWritable key, int defaultVal) {
+    byte[] val = getValue(key);
     if (val == null || val.length == 0) {
-      return DEFAULT_REGION_REPLICATION;
+      return defaultVal;
     }
     return Integer.parseInt(Bytes.toString(val));
   }
@@ -1202,6 +1251,15 @@ public class HTableDescriptor implements WritableComparable<HTableDescriptor> {
     setConfiguration(RegionReplicaUtil.REGION_REPLICA_WAIT_FOR_PRIMARY_FLUSH_CONF_KEY,
       Boolean.toString(memstoreReplication));
     return this;
+  }
+
+  public HTableDescriptor setPriority(int priority) {
+    setValue(PRIORITY_KEY, Integer.toString(priority));
+    return this;
+  }
+
+  public int getPriority() {
+    return getIntValue(PRIORITY_KEY, DEFAULT_PRIORITY);
   }
 
   /**
@@ -1653,6 +1711,7 @@ public class HTableDescriptor implements WritableComparable<HTableDescriptor> {
           .setScope(HConstants.REPLICATION_SCOPE_LOCAL)
           // Disable blooms for meta.  Needs work.  Seems to mess w/ getClosestOrBefore.
           .setBloomFilterType(BloomType.NONE)
+          .setCacheDataInL1(true)
          });
     metaDescriptor.addCoprocessor(
       "org.apache.hadoop.hbase.coprocessor.MultiRowMutationEndpoint",

@@ -19,25 +19,25 @@
 
 package org.apache.hadoop.hbase.regionserver.wal;
 
+import static org.apache.hadoop.hbase.regionserver.wal.ProtobufLogReader.DEFAULT_WAL_TRAILER_WARN_SIZE;
+import static org.apache.hadoop.hbase.regionserver.wal.ProtobufLogReader.WAL_TRAILER_WARN_SIZE;
+
 import java.io.IOException;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.codec.Codec;
 import org.apache.hadoop.hbase.protobuf.generated.WALProtos.WALHeader;
 import org.apache.hadoop.hbase.protobuf.generated.WALProtos.WALTrailer;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.wal.WAL.Entry;
-
-import static org.apache.hadoop.hbase.regionserver.wal.ProtobufLogReader.WAL_TRAILER_WARN_SIZE;
-import static org.apache.hadoop.hbase.regionserver.wal.ProtobufLogReader.DEFAULT_WAL_TRAILER_WARN_SIZE;
 
 /**
  * Writer for protobuf-based WAL.
@@ -159,22 +159,16 @@ public class ProtobufLogWriter extends WriterBase {
       output.write(ProtobufLogReader.PB_WAL_COMPLETE_MAGIC);
       this.trailerWritten = true;
     } catch (IOException ioe) {
-      LOG.error("Got IOException while writing trailer", ioe);
+      LOG.warn("Failed to write trailer, non-fatal, continuing...", ioe);
     }
   }
 
   @Override
   public void sync() throws IOException {
-    try {
-      // This looks to be a noop but its what we have always done.  Leaving for now.
-      this.output.flush();
-      // TODO: Add in option to call hsync. See HBASE-5954 Allow proper fsync support for HBase
-      //
-      this.output.hflush();
-    } catch (NullPointerException npe) {
-      // Concurrent close...
-      throw new IOException(npe);
-    }
+    FSDataOutputStream fsdos = this.output;
+    if (fsdos == null) return; // Presume closed
+    fsdos.flush();
+    fsdos.hflush();
   }
 
   @Override

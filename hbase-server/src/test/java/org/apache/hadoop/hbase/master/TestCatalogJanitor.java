@@ -48,11 +48,14 @@ import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.MetaMockingUtil;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.NotAllMetaRegionsOnlineException;
+import org.apache.hadoop.hbase.ProcedureInfo;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.TableDescriptors;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.TableStateManager;
+import org.apache.hadoop.hbase.backup.BackupType;
 import org.apache.hadoop.hbase.client.ClusterConnection;
 import org.apache.hadoop.hbase.client.HConnectionTestingUtility;
 import org.apache.hadoop.hbase.client.Result;
@@ -63,6 +66,8 @@ import org.apache.hadoop.hbase.executor.ExecutorService;
 import org.apache.hadoop.hbase.io.Reference;
 import org.apache.hadoop.hbase.master.CatalogJanitor.SplitParentFirstComparator;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
+import org.apache.hadoop.hbase.master.snapshot.SnapshotManager;
+import org.apache.hadoop.hbase.procedure.MasterProcedureManagerHost;
 import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos;
@@ -79,6 +84,7 @@ import org.apache.hadoop.hbase.regionserver.HStore;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.HFileArchiveUtil;
+import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.util.Triple;
 import org.apache.hadoop.hbase.zookeeper.MetaTableLocator;
 import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
@@ -212,10 +218,12 @@ public class TestCatalogJanitor {
   class MockMasterServices implements MasterServices {
     private final MasterFileSystem mfs;
     private final AssignmentManager asm;
+    private final ServerManager sm;
 
     MockMasterServices(final Server server) throws IOException {
       this.mfs = new MasterFileSystem(server, this);
       this.asm = Mockito.mock(AssignmentManager.class);
+      this.sm = Mockito.mock(ServerManager.class);
     }
 
     @Override
@@ -229,10 +237,23 @@ public class TestCatalogJanitor {
     }
 
     @Override
-    public long createTable(HTableDescriptor desc, byte[][] splitKeys)
-        throws IOException {
+    public long createTable(
+        final HTableDescriptor desc,
+        final byte[][] splitKeys,
+        final long nonceGroup,
+        final long nonce) throws IOException {
       // no-op
       return -1;
+    }
+
+    @Override
+    public SnapshotManager getSnapshotManager() {
+      return null;
+    }
+
+    @Override
+    public MasterProcedureManagerHost getMasterProcedureManagerHost() {
+      return null;
     }
 
     @Override
@@ -259,7 +280,7 @@ public class TestCatalogJanitor {
     public MasterCoprocessorHost getMasterCoprocessorHost() {
       return null;
     }
-    
+
     @Override
     public MasterQuotaManager getMasterQuotaManager() {
       return null;
@@ -272,7 +293,7 @@ public class TestCatalogJanitor {
 
     @Override
     public ServerManager getServerManager() {
-      return null;
+      return sm;
     }
 
     @Override
@@ -404,6 +425,27 @@ public class TestCatalogJanitor {
     }
 
     @Override
+    public boolean abortProcedure(final long procId, final boolean mayInterruptIfRunning)
+        throws IOException {
+      return false;  //To change body of implemented methods use File | Settings | File Templates.
+    }
+
+    @Override
+    public List<ProcedureInfo> listProcedures() throws IOException {
+      return null;  //To change body of implemented methods use File | Settings | File Templates.
+    }
+
+    @Override
+    public Pair<Long, String> backupTables(
+        final BackupType type,
+        final List<TableName> tableList,
+        final String targetRootDir, final int workers,
+        final long bandwidth) throws IOException {
+      return null;
+    }
+
+
+    @Override
     public List<HTableDescriptor> listTableDescriptorsByNamespace(String name) throws IOException {
       return null;  //To change body of implemented methods use File | Settings | File Templates.
     }
@@ -414,39 +456,68 @@ public class TestCatalogJanitor {
     }
 
     @Override
-    public long deleteTable(TableName tableName) throws IOException {
+    public long deleteTable(
+        final TableName tableName,
+        final long nonceGroup,
+        final long nonce) throws IOException {
+      return -1;
+    }
+    @Override
+    public LoadBalancer getLoadBalancer() {
+      return null;
+    }
+
+    public void truncateTable(
+        final TableName tableName,
+        final boolean preserveSplits,
+        final long nonceGroup,
+        final long nonce) throws IOException {
+    }
+
+    @Override
+    public void modifyTable(
+        final TableName tableName,
+        final HTableDescriptor descriptor,
+        final long nonceGroup,
+        final long nonce) throws IOException {
+    }
+
+    @Override
+    public long enableTable(
+        final TableName tableName,
+        final long nonceGroup,
+        final long nonce) throws IOException {
       return -1;
     }
 
     @Override
-    public void truncateTable(TableName tableName, boolean preserveSplits) throws IOException { }
-
-
-    @Override
-    public void modifyTable(TableName tableName, HTableDescriptor descriptor)
-        throws IOException { }
-
-    @Override
-    public long enableTable(TableName tableName) throws IOException {
+    public long disableTable(
+        TableName tableName,
+        final long nonceGroup,
+        final long nonce) throws IOException {
       return -1;
     }
 
     @Override
-    public long disableTable(TableName tableName) throws IOException {
-      return -1;
-    }
+    public void addColumn(
+        final TableName tableName,
+        final HColumnDescriptor columnDescriptor,
+        final long nonceGroup,
+        final long nonce) throws IOException { }
 
     @Override
-    public void addColumn(TableName tableName, HColumnDescriptor column)
-        throws IOException { }
+    public void modifyColumn(
+        final TableName tableName,
+        final HColumnDescriptor descriptor,
+        final long nonceGroup,
+        final long nonce) throws IOException { }
 
     @Override
-    public void modifyColumn(TableName tableName, HColumnDescriptor descriptor)
-        throws IOException { }
-
-    @Override
-    public void deleteColumn(TableName tableName, byte[] columnName)
-        throws IOException { }
+    public void deleteColumn(
+        final TableName tableName,
+        final byte[] columnName,
+        final long nonceGroup,
+        final long nonce) throws IOException { }
 
     @Override
     public TableLockManager getTableLockManager() {
@@ -465,6 +536,16 @@ public class TestCatalogJanitor {
     }
 
     @Override
+    public boolean isNamespaceManagerInitialized() {
+      return false;
+    }
+
+    @Override
+    public boolean isInMaintenanceMode() {
+      return false;
+    }
+
+    @Override
     public long getLastMajorCompactionTimestamp(TableName table) throws IOException {
       // Auto-generated method stub
       return 0;
@@ -474,6 +555,12 @@ public class TestCatalogJanitor {
     public long getLastMajorCompactionTimestampForRegion(byte[] regionName) throws IOException {
       // Auto-generated method stub
       return 0;
+    }
+
+    @Override
+    public TableStateManager getTableStateManager() {
+      // TODO Auto-generated method stub
+      return null;
     }
   }
 

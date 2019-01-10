@@ -71,6 +71,26 @@ public class MetricsRegionServerWrapperStub implements MetricsRegionServerWrappe
   }
 
   @Override
+  public long getMaxStoreFileAge() {
+    return 2;
+  }
+
+  @Override
+  public long getMinStoreFileAge() {
+    return 2;
+  }
+
+  @Override
+  public long getAvgStoreFileAge() {
+    return 2;
+  }
+
+  @Override
+  public long getNumReferenceFiles() {
+    return 2;
+  }
+
+  @Override
   public double getRequestsPerSecond() {
     return 0;
   }
@@ -88,6 +108,26 @@ public class MetricsRegionServerWrapperStub implements MetricsRegionServerWrappe
   @Override
   public long getWriteRequestsCount() {
     return 707;
+  }
+
+  @Override
+  public long getRpcGetRequestsCount() {
+    return 521;
+  }
+
+  @Override
+  public long getRpcScanRequestsCount() {
+    return 101;
+  }
+
+  @Override
+  public long getRpcMultiRequestsCount() {
+    return 486;
+  }
+
+  @Override
+  public long getRpcMutateRequestsCount() {
+    return 606;
   }
 
   @Override
@@ -126,12 +166,12 @@ public class MetricsRegionServerWrapperStub implements MetricsRegionServerWrappe
   }
 
   @Override
-  public int getPercentFileLocal() {
+  public double getPercentFileLocal() {
     return 99;
   }
 
   @Override
-  public int getPercentFileLocalSecondaryRegions() {
+  public double getPercentFileLocalSecondaryRegions() {
     return 99;
   }
 
@@ -176,8 +216,18 @@ public class MetricsRegionServerWrapperStub implements MetricsRegionServerWrappe
   }
 
   @Override
+  public long getBlockCachePrimaryHitCount() {
+    return 422;
+  }
+
+  @Override
   public long getBlockCacheMissCount() {
     return 417;
+  }
+
+  @Override
+  public long getBlockCachePrimaryMissCount() {
+    return 421;
   }
 
   @Override
@@ -186,12 +236,17 @@ public class MetricsRegionServerWrapperStub implements MetricsRegionServerWrappe
   }
 
   @Override
+   public long getBlockCachePrimaryEvictedCount() {
+    return 420;
+  }
+
+  @Override
   public double getBlockCacheHitPercent() {
     return 98;
   }
 
   @Override
-  public int getBlockCacheHitCachingPercent() {
+  public double getBlockCacheHitCachingPercent() {
     return 97;
   }
 
@@ -252,7 +307,182 @@ public class MetricsRegionServerWrapperStub implements MetricsRegionServerWrappe
   }
 
   @Override
+  public long getDataMissCount() {
+    return 0;
+  }
+
+  @Override
+  public long getLeafIndexMissCount() {
+    return 0;
+  }
+
+  @Override
+  public long getBloomChunkMissCount() {
+    return 0;
+  }
+
+  @Override
+  public long getMetaMissCount() {
+    return 0;
+  }
+
+  @Override
+  public long getRootIndexMissCount() {
+    return 0;
+  }
+
+  @Override
+  public long getIntermediateIndexMissCount() {
+    return 0;
+  }
+
+  @Override
+  public long getFileInfoMissCount() {
+    return 0;
+  }
+
+  @Override
+  public long getGeneralBloomMetaMissCount() {
+    return 0;
+  }
+
+  @Override
+  public long getDeleteFamilyBloomMissCount() {
+    return 0;
+  }
+
+  @Override
+  public long getTrailerMissCount() {
+    return 0;
+  }
+
+  @Override
+  public long getDataHitCount() {
+    return 0;
+  }
+
+  @Override
+  public long getLeafIndexHitCount() {
+    return 0;
+  }
+
+  @Override
+  public long getBloomChunkHitCount() {
+    return 0;
+  }
+
+  @Override
+  public long getMetaHitCount() {
+    return 0;
+  }
+
+  @Override
+  public long getRootIndexHitCount() {
+    return 0;
+  }
+
+  @Override
+  public long getIntermediateIndexHitCount() {
+    return 0;
+  }
+
+  @Override
+  public long getFileInfoHitCount() {
+    return 0;
+  }
+
+  @Override
+  public long getGeneralBloomMetaHitCount() {
+    return 0;
+  }
+
+  @Override
+  public long getDeleteFamilyBloomHitCount() {
+    return 0;
+  }
+
+  @Override
+  public long getTrailerHitCount() {
+    return 0;
+  }
+
+  @Override
   public int getSplitQueueSize() {
     return 0;
+  }
+
+  @Override
+  public long getAverageRegionSize() {
+    return 10000000;
+  }
+
+  @Override
+  public long getCellsCountCompactedToMob() {
+    return 20;
+  }
+
+  @Override
+  public long getCellsCountCompactedFromMob() {
+    return 10;
+  }
+
+  @Override
+  public long getCellsSizeCompactedToMob() {
+    return 200;
+  }
+
+  @Override
+  public long getCellsSizeCompactedFromMob() {
+    return 100;
+  }
+
+  @Override
+  public long getMobFlushCount() {
+    return 1;
+  }
+
+  @Override
+  public long getMobFlushedCellsCount() {
+    return 10;
+  }
+
+  @Override
+  public long getMobFlushedCellsSize() {
+    return 1000;
+  }
+
+  @Override
+  public long getMobScanCellsCount() {
+    return 10;
+  }
+
+  @Override
+  public long getMobScanCellsSize() {
+    return 1000;
+  }
+
+  @Override
+  public long getMobFileCacheAccessCount() {
+    return 100;
+  }
+
+  @Override
+  public long getMobFileCacheMissCount() {
+    return 50;
+  }
+
+  @Override
+  public long getMobFileCacheEvictedCount() {
+    return 0;
+  }
+
+  @Override
+  public long getMobFileCacheCount() {
+    return 100;
+  }
+
+  @Override
+  public int getMobFileCacheHitPercent() {
+    return 50;
   }
 }

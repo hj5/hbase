@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.hbase.regionserver.compactions;
 
+import com.google.common.collect.Lists;
+
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.util.ArrayList;
@@ -33,123 +35,61 @@ import org.apache.hadoop.hbase.regionserver.InternalScanner;
 import org.apache.hadoop.hbase.regionserver.ScanType;
 import org.apache.hadoop.hbase.regionserver.Store;
 import org.apache.hadoop.hbase.regionserver.StoreFile;
+import org.apache.hadoop.hbase.regionserver.StoreFile.Writer;
 import org.apache.hadoop.hbase.regionserver.StoreFileScanner;
+import org.apache.hadoop.hbase.security.User;
 
 /**
  * Compact passed set of files. Create an instance and then call
- * {@link #compact(CompactionRequest, CompactionThroughputController)}
+ * {@link #compact(CompactionRequest, CompactionThroughputController, User)}
  */
 @InterfaceAudience.Private
-public class DefaultCompactor extends Compactor {
+public class DefaultCompactor extends Compactor<Writer> {
   private static final Log LOG = LogFactory.getLog(DefaultCompactor.class);
 
   public DefaultCompactor(final Configuration conf, final Store store) {
     super(conf, store);
   }
 
+  private final CellSinkFactory<Writer> writerFactory = new CellSinkFactory<Writer>() {
+
+    @Override
+    public Writer createWriter(InternalScanner scanner,
+        org.apache.hadoop.hbase.regionserver.compactions.Compactor.FileDetails fd,
+        boolean shouldDropBehind) throws IOException {
+      return createTmpWriter(fd, shouldDropBehind);
+    }
+  };
+
   /**
    * Do a minor/major compaction on an explicit set of storefiles from a Store.
    */
   public List<Path> compact(final CompactionRequest request,
-      CompactionThroughputController throughputController) throws IOException {
-    FileDetails fd = getFileDetails(request.getFiles(), request.isAllFiles());
-    this.progress = new CompactionProgress(fd.maxKeyCount);
-
-    // Find the smallest read point across all the Scanners.
-    long smallestReadPoint = getSmallestReadPoint();
-
-    List<StoreFileScanner> scanners;
-    Collection<StoreFile> readersToClose;
-    if (this.conf.getBoolean("hbase.regionserver.compaction.private.readers", false)) {
-      // clone all StoreFiles, so we'll do the compaction on a independent copy of StoreFiles,
-      // HFileFiles, and their readers
-      readersToClose = new ArrayList<StoreFile>(request.getFiles().size());
-      for (StoreFile f : request.getFiles()) {
-        readersToClose.add(new StoreFile(f));
-      }
-      scanners = createFileScanners(readersToClose, smallestReadPoint);
-    } else {
-      readersToClose = Collections.emptyList();
-      scanners = createFileScanners(request.getFiles(), smallestReadPoint);
-    }
-
-    StoreFile.Writer writer = null;
-    List<Path> newFiles = new ArrayList<Path>();
-    boolean cleanSeqId = false;
-    IOException e = null;
-    try {
-      InternalScanner scanner = null;
-      try {
-        /* Include deletes, unless we are doing a compaction of all files */
-        ScanType scanType =
-            request.isAllFiles() ? ScanType.COMPACT_DROP_DELETES : ScanType.COMPACT_RETAIN_DELETES;
-        scanner = preCreateCoprocScanner(request, scanType, fd.earliestPutTs, scanners);
-        if (scanner == null) {
-          scanner = createScanner(store, scanners, scanType, smallestReadPoint, fd.earliestPutTs);
-        }
-        scanner = postCreateCoprocScanner(request, scanType, scanner);
-        if (scanner == null) {
-          // NULL scanner returned from coprocessor hooks means skip normal processing.
-          return newFiles;
-        }
-        // Create the writer even if no kv(Empty store file is also ok),
-        // because we need record the max seq id for the store file, see HBASE-6059
-        if(fd.minSeqIdToKeep > 0) {
-          smallestReadPoint = Math.min(fd.minSeqIdToKeep, smallestReadPoint);
-          cleanSeqId = true;
-        }
-
-        // When all MVCC readpoints are 0, don't write them.
-        // See HBASE-8166, HBASE-12600, and HBASE-13389.
-        writer = store.createWriterInTmp(fd.maxKeyCount, this.compactionCompression, true,
-          fd.maxMVCCReadpoint > 0, fd.maxTagsLength > 0);
-        boolean finished =
-            performCompaction(scanner, writer, smallestReadPoint, cleanSeqId, throughputController);
-        if (!finished) {
-          writer.close();
-          store.getFileSystem().delete(writer.getPath(), false);
-          writer = null;
-          throw new InterruptedIOException( "Aborting compaction of store " + store +
-              " in region " + store.getRegionInfo().getRegionNameAsString() +
-              " because it was interrupted.");
-         }
-       } finally {
-         if (scanner != null) {
-           scanner.close();
-         }
-      }
-    } catch (IOException ioe) {
-      e = ioe;
-      // Throw the exception
-      throw ioe;
-    }
-    finally {
-      try {
-        if (writer != null) {
-          if (e != null) {
-            writer.close();
-          } else {
-            writer.appendMetadata(fd.maxSeqId, request.isAllFiles());
-            writer.close();
-            newFiles.add(writer.getPath());
-          }
-        }
-      } finally {
-        for (StoreFile f : readersToClose) {
-          try {
-            f.closeReader(true);
-          } catch (IOException ioe) {
-            LOG.warn("Exception closing " + f, ioe);
-          }
-        }
-      }
-    }
-    return newFiles;
+      CompactionThroughputController throughputController, User user) throws IOException {
+    return compact(request, defaultScannerFactory, writerFactory, throughputController, user);
   }
 
   /**
+   * Creates a writer for a new file in a temporary directory.
+   * @param fd The file details.
+   * @param smallestReadPoint The smallest mvcc readPoint across all the scanners in this region.
+   * @return Writer for a new StoreFile in the tmp dir.
+   * @throws IOException
+   */
+  protected StoreFile.Writer createTmpWriter(FileDetails fd, long smallestReadPoint) throws IOException {
+    // When all MVCC readpoints are 0, don't write them.
+    // See HBASE-8166, HBASE-12600, and HBASE-13389.
+
+    // make this writer with tags always because of possible new cells with tags.
+    StoreFile.Writer writer = store.createWriterInTmp(fd.maxKeyCount, this.compactionCompression,
+            true, fd.maxMVCCReadpoint > 0, fd.maxTagsLength >0);
+    return writer;
+  }
+
+
+  /**
    * Compact a list of files for testing. Creates a fake {@link CompactionRequest} to pass to
-   * {@link #compact(CompactionRequest, CompactionThroughputController)};
+   * {@link #compact(CompactionRequest, CompactionThroughputController, User)};
    * @param filesToCompact the files to compact. These are used as the compactionSelection for
    *          the generated {@link CompactionRequest}.
    * @param isMajor true to major compact (prune all deletes, max versions, etc)
@@ -161,6 +101,32 @@ public class DefaultCompactor extends Compactor {
       throws IOException {
     CompactionRequest cr = new CompactionRequest(filesToCompact);
     cr.setIsMajor(isMajor, isMajor);
-    return this.compact(cr, NoLimitCompactionThroughputController.INSTANCE);
+    return this.compact(cr, NoLimitCompactionThroughputController.INSTANCE, null);
+  }
+
+  @Override
+  protected List<Path> commitWriter(Writer writer, FileDetails fd,
+      CompactionRequest request) throws IOException {
+    List<Path> newFiles = Lists.newArrayList(writer.getPath());
+    writer.appendMetadata(fd.maxSeqId, request.isAllFiles());
+    writer.close();
+    return newFiles;
+  }
+
+  @Override
+  protected void abortWriter(Writer writer) throws IOException {
+    Path leftoverFile = writer.getPath();
+    try {
+      writer.close();
+    } catch (IOException e) {
+      LOG.warn("Failed to close the writer after an unfinished compaction.", e);
+    }
+    try {
+      store.getFileSystem().delete(leftoverFile, false);
+    } catch (IOException e) {
+      LOG.warn(
+        "Failed to delete the leftover file " + leftoverFile + " after an unfinished compaction.",
+        e);
+    }
   }
 }

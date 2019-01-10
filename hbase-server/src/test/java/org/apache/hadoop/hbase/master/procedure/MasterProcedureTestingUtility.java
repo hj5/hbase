@@ -38,6 +38,7 @@ import org.apache.hadoop.hbase.TableStateManager;
 import org.apache.hadoop.hbase.client.BufferedMutator;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.Durability;
+import org.apache.hadoop.hbase.client.NonceGenerator;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.MetaScanner;
 import org.apache.hadoop.hbase.client.MetaScanner.MetaScannerVisitor;
@@ -96,7 +97,10 @@ public class MasterProcedureTestingUtility {
     List<Path> allRegionDirs = FSUtils.getRegionDirs(fs, tableDir);
     for (int i = 0; i < regions.length; ++i) {
       Path regionDir = new Path(tableDir, regions[i].getEncodedName());
-      assertTrue(regions[i] + " region dir does not exist", fs.exists(regionDir));
+      if (!fs.exists(regionDir)) {
+        LOG.debug(regions[i] + " region dir does not exist: " + regionDir);
+      }
+      assertTrue(regions[i] + " region dir does not exist: " + regionDir, fs.exists(regionDir));
       assertTrue(allRegionDirs.remove(regionDir));
       List<Path> allFamilyDirs = FSUtils.getFamilyDirs(fs, regionDir);
       for (int j = 0; j < family.length; ++j) {
@@ -383,6 +387,14 @@ public class MasterProcedureTestingUtility {
       put.add(family, q, value);
     }
     return put;
+  }
+
+  public static long generateNonceGroup(final HMaster master) {
+    return master.getConnection().getNonceGenerator().getNonceGroup();
+  }
+
+  public static long generateNonce(final HMaster master) {
+    return master.getConnection().getNonceGenerator().newNonce();
   }
 
   public static class InjectAbortOnLoadListener

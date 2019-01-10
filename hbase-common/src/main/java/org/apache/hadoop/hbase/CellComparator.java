@@ -170,6 +170,11 @@ public class CellComparator implements Comparator<Cell>, Serializable {
         right.getQualifierLength());
   }
 
+  public final static int compareQualifiers(Cell left, byte[] right, int rOffset, int rLength) {
+    return Bytes.compareTo(left.getQualifierArray(), left.getQualifierOffset(),
+        left.getQualifierLength(), right, rOffset, rLength);
+  }
+
   public int compareFlatKey(Cell left, Cell right) {
     int compare = compareRows(left, right);
     if (compare != 0) {
@@ -235,9 +240,7 @@ public class CellComparator implements Comparator<Cell>, Serializable {
   }
 
   public static int compareTimestamps(final Cell left, final Cell right) {
-    long ltimestamp = left.getTimestamp();
-    long rtimestamp = right.getTimestamp();
-    return compareTimestamps(ltimestamp, rtimestamp);
+    return compareTimestamps(left.getTimestamp(), right.getTimestamp());
   }
 
   /********************* hashCode ************************/
@@ -356,7 +359,7 @@ public class CellComparator implements Comparator<Cell>, Serializable {
     return c;
   }
 
-  private static int compareTimestamps(final long ltimestamp, final long rtimestamp) {
+  public static int compareTimestamps(final long ltimestamp, final long rtimestamp) {
     // The below older timestamps sorting ahead of newer timestamps looks
     // wrong but it is intentional. This way, newer timestamps are first
     // found when we iterate over a memstore and newer versions are the

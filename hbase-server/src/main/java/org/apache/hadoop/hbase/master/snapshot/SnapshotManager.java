@@ -122,15 +122,6 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
    */
   private static final String SNAPSHOT_WAKE_MILLIS_KEY = "hbase.snapshot.master.wakeMillis";
 
-  /** By default, check to see if the snapshot is complete (ms) */
-  private static final int SNAPSHOT_TIMEOUT_MILLIS_DEFAULT = 60000;
-
-  /**
-   * Conf key for # of ms elapsed before injecting a snapshot timeout error when waiting for
-   * completion.
-   */
-  private static final String SNAPSHOT_TIMEOUT_MILLIS_KEY = "hbase.snapshot.master.timeoutMillis";
-
   /** Name of the operation to use in the controller */
   public static final String ONLINE_SNAPSHOT_CONTROLLER_DESCRIPTION = "online-snapshot";
 
@@ -568,6 +559,7 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
       builder.setVersion(SnapshotDescriptionUtils.SNAPSHOT_LAYOUT_VERSION);
     }
     User user = RpcServer.getRequestUser();
+    LOG.info("User " + user + " requested snapshot " + snapshot);
     if (User.isHBaseSecurityEnabled(master.getConfiguration()) && user != null) {
       builder.setOwner(user.getShortName());
     }
@@ -732,7 +724,8 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
 
       // call coproc pre hook
       if (cpHost != null) {
-        cpHost.preRestoreSnapshot(reqSnapshot, snapshotTableDesc);
+        LOG.debug("snapshot owner " + snapshot.getOwner() + " for " + snapshot.getName());
+        cpHost.preRestoreSnapshot(snapshot, snapshotTableDesc);
       }
       try {
         // Table already exist. Check and update the region quota for this table namespace
@@ -747,12 +740,12 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
       LOG.info("Restore snapshot=" + snapshot.getName() + " as table=" + tableName);
 
       if (cpHost != null) {
-        cpHost.postRestoreSnapshot(reqSnapshot, snapshotTableDesc);
+        cpHost.postRestoreSnapshot(snapshot, snapshotTableDesc);
       }
     } else {
       HTableDescriptor htd = RestoreSnapshotHelper.cloneTableSchema(snapshotTableDesc, tableName);
       if (cpHost != null) {
-        cpHost.preCloneSnapshot(reqSnapshot, htd);
+        cpHost.preCloneSnapshot(snapshot, htd);
       }
       try {
         checkAndUpdateNamespaceQuota(manifest, tableName);
@@ -766,7 +759,7 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
       LOG.info("Clone snapshot=" + snapshot.getName() + " as table=" + tableName);
 
       if (cpHost != null) {
-        cpHost.postCloneSnapshot(reqSnapshot, htd);
+        cpHost.postCloneSnapshot(snapshot, htd);
       }
     }
   }
@@ -1079,7 +1072,10 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
     // get the configuration for the coordinator
     Configuration conf = master.getConfiguration();
     long wakeFrequency = conf.getInt(SNAPSHOT_WAKE_MILLIS_KEY, SNAPSHOT_WAKE_MILLIS_DEFAULT);
-    long timeoutMillis = conf.getLong(SNAPSHOT_TIMEOUT_MILLIS_KEY, SNAPSHOT_TIMEOUT_MILLIS_DEFAULT);
+    long timeoutMillis = Math.max(conf.getLong(SnapshotDescriptionUtils.SNAPSHOT_TIMEOUT_MILLIS_KEY,
+                    SnapshotDescriptionUtils.SNAPSHOT_TIMEOUT_MILLIS_DEFAULT),
+            conf.getLong(SnapshotDescriptionUtils.MASTER_SNAPSHOT_TIMEOUT_MILLIS,
+                    SnapshotDescriptionUtils.DEFAULT_MAX_WAIT_TIME));
     int opThreads = conf.getInt(SNAPSHOT_POOL_THREADS_KEY, SNAPSHOT_POOL_THREADS_DEFAULT);
 
     // setup the default procedure coordinator

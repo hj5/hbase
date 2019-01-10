@@ -27,9 +27,9 @@ import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.InvalidFamilyOperationException;
+import org.apache.hadoop.hbase.ProcedureInfo;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
-import org.apache.hadoop.hbase.procedure2.ProcedureResult;
 import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProcedureProtos.AddColumnFamilyState;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
@@ -91,9 +91,8 @@ public class TestAddColumnFamilyProcedure {
     MasterProcedureTestingUtility.createTable(procExec, tableName, null, "f3");
 
     // Test 1: Add a column family online
-    long procId1 =
-        procExec.submitProcedure(new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName,
-            columnDescriptor1));
+    long procId1 = procExec.submitProcedure(
+      new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName, columnDescriptor1));
     // Wait the completion
     ProcedureTestingUtility.waitProcedure(procExec, procId1);
     ProcedureTestingUtility.assertProcNotFailed(procExec, procId1);
@@ -103,9 +102,8 @@ public class TestAddColumnFamilyProcedure {
 
     // Test 2: Add a column family offline
     UTIL.getHBaseAdmin().disableTable(tableName);
-    long procId2 =
-        procExec.submitProcedure(new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName,
-            columnDescriptor2));
+    long procId2 = procExec.submitProcedure(
+      new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName, columnDescriptor2));
     // Wait the completion
     ProcedureTestingUtility.waitProcedure(procExec, procId2);
     ProcedureTestingUtility.assertProcNotFailed(procExec, procId2);
@@ -124,9 +122,8 @@ public class TestAddColumnFamilyProcedure {
     MasterProcedureTestingUtility.createTable(procExec, tableName, null, "f1");
 
     // add the column family
-    long procId1 =
-        procExec.submitProcedure(new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName,
-            columnDescriptor));
+    long procId1 = procExec.submitProcedure(
+      new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName, columnDescriptor));
     // Wait the completion
     ProcedureTestingUtility.waitProcedure(procExec, procId1);
     ProcedureTestingUtility.assertProcNotFailed(procExec, procId1);
@@ -134,31 +131,31 @@ public class TestAddColumnFamilyProcedure {
       tableName, cf2);
 
     // add the column family that exists
-    long procId2 =
-        procExec.submitProcedure(new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName,
-            columnDescriptor));
+    long procId2 = procExec.submitProcedure(
+      new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName, columnDescriptor));
     // Wait the completion
     ProcedureTestingUtility.waitProcedure(procExec, procId2);
 
     // Second add should fail with InvalidFamilyOperationException
-    ProcedureResult result = procExec.getResult(procId2);
+    ProcedureInfo result = procExec.getResult(procId2);
     assertTrue(result.isFailed());
-    LOG.debug("Add failed with exception: " + result.getException());
-    assertTrue(result.getException().getCause() instanceof InvalidFamilyOperationException);
+    LOG.debug("Add failed with exception: " + result.getExceptionFullMessage());
+    assertTrue(
+      ProcedureTestingUtility.getExceptionCause(result) instanceof InvalidFamilyOperationException);
 
     // Do the same add the existing column family - this time offline
     UTIL.getHBaseAdmin().disableTable(tableName);
-    long procId3 =
-        procExec.submitProcedure(new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName,
-            columnDescriptor));
+    long procId3 = procExec.submitProcedure(
+      new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName, columnDescriptor));
     // Wait the completion
     ProcedureTestingUtility.waitProcedure(procExec, procId3);
 
     // Second add should fail with InvalidFamilyOperationException
     result = procExec.getResult(procId3);
     assertTrue(result.isFailed());
-    LOG.debug("Add failed with exception: " + result.getException());
-    assertTrue(result.getException().getCause() instanceof InvalidFamilyOperationException);
+    LOG.debug("Add failed with exception: " + result.getExceptionFullMessage());
+    assertTrue(
+      ProcedureTestingUtility.getExceptionCause(result) instanceof InvalidFamilyOperationException);
   }
 
   @Test(timeout = 60000)
@@ -175,9 +172,8 @@ public class TestAddColumnFamilyProcedure {
     ProcedureTestingUtility.setKillAndToggleBeforeStoreUpdate(procExec, true);
 
     // Start the AddColumnFamily procedure && kill the executor
-    long procId =
-        procExec.submitProcedure(new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName,
-            columnDescriptor));
+    long procId = procExec.submitProcedure(
+      new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName, columnDescriptor));
 
     // Restart the executor and execute the step twice
     int numberOfSteps = AddColumnFamilyState.values().length;
@@ -201,9 +197,8 @@ public class TestAddColumnFamilyProcedure {
     ProcedureTestingUtility.setKillAndToggleBeforeStoreUpdate(procExec, true);
 
     // Start the AddColumnFamily procedure && kill the executor
-    long procId =
-        procExec.submitProcedure(new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName,
-            columnDescriptor));
+    long procId = procExec.submitProcedure(
+      new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName, columnDescriptor));
 
     // Restart the executor and execute the step twice
     int numberOfSteps = AddColumnFamilyState.values().length;
@@ -227,9 +222,8 @@ public class TestAddColumnFamilyProcedure {
     ProcedureTestingUtility.setKillAndToggleBeforeStoreUpdate(procExec, true);
 
     // Start the AddColumnFamily procedure && kill the executor
-    long procId =
-        procExec.submitProcedure(new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName,
-            columnDescriptor));
+    long procId = procExec.submitProcedure(
+      new AddColumnFamilyProcedure(procExec.getEnvironment(), tableName, columnDescriptor));
 
     int numberOfSteps = AddColumnFamilyState.values().length - 2; // failing in the middle of proc
     MasterProcedureTestingUtility.testRollbackAndDoubleExecution(procExec, procId, numberOfSteps,

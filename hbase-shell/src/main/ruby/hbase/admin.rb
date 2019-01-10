@@ -45,7 +45,7 @@ module Hbase
     #----------------------------------------------------------------------------------------------
     # Returns a list of tables in hbase
     def list(regex = ".*")
-      @admin.listTables(regex).map { |t| t.getNameAsString }
+      @admin.listTableNames(regex).map { |t| t.getNameAsString }
     end
 
     #----------------------------------------------------------------------------------------------
@@ -56,12 +56,25 @@ module Hbase
 
     #----------------------------------------------------------------------------------------------
     # Requests a table or region or column family compaction
-    def compact(table_or_region_name, family = nil)
-      if family == nil
-        @admin.compact(table_or_region_name)
+    def compact(table_or_region_name, family = nil, type = "NORMAL")
+      if type == "NORMAL"
+        if family == nil
+          @admin.compact(table_or_region_name)
+        else
+          # We are compacting a column family within a region.
+          @admin.compact(table_or_region_name, family)
+        end
+      elsif type == "MOB"
+        if family == nil
+          @admin.compact(org.apache.hadoop.hbase.TableName.valueOf(table_or_region_name),
+          org.apache.hadoop.hbase.client.Admin::CompactType::MOB)
+        else
+          # We are compacting a mob column family within a table.
+          @admin.compact(org.apache.hadoop.hbase.TableName.valueOf(table_or_region_name), family.to_java_bytes,
+          org.apache.hadoop.hbase.client.Admin::CompactType::MOB)
+        end
       else
-        # We are compacting a column family within a region.
-        @admin.compact(table_or_region_name, family)
+         raise ArgumentError, "only NORMAL or MOB accepted for type!"
       end
     end
 
@@ -72,12 +85,25 @@ module Hbase
 
     #----------------------------------------------------------------------------------------------
     # Requests a table or region or column family major compaction
-    def major_compact(table_or_region_name, family = nil)
-      if family == nil
-        @admin.majorCompact(table_or_region_name)
+    def major_compact(table_or_region_name, family = nil, type = "NORMAL")
+      if type == "NORMAL"
+        if family == nil
+          @admin.majorCompact(table_or_region_name)
+        else
+          # We are major compacting a column family within a region or table.
+          @admin.majorCompact(table_or_region_name, family)
+        end
+      elsif type == "MOB"
+        if family == nil
+          @admin.majorCompact(org.apache.hadoop.hbase.TableName.valueOf(table_or_region_name),
+          org.apache.hadoop.hbase.client.Admin::CompactType::MOB)
+        else
+          # We are major compacting a mob column family within a table.
+          @admin.majorCompact(org.apache.hadoop.hbase.TableName.valueOf(table_or_region_name),
+          family.to_java_bytes, org.apache.hadoop.hbase.client.Admin::CompactType::MOB)
+        end
       else
-        # We are major compacting a column family within a region or table.
-        @admin.majorCompact(table_or_region_name, family)
+        raise ArgumentError, "only NORMAL or MOB accepted for type!"
       end
     end
 
@@ -100,10 +126,60 @@ module Hbase
     end
 
     #----------------------------------------------------------------------------------------------
+    # Enable/disable one split or merge switch
+    # Returns previous switch setting.
+    def splitormerge_switch(type, enabled)
+      switch_type = nil
+      if type == 'SPLIT'
+        switch_type = org.apache.hadoop.hbase.client.Admin::MasterSwitchType::SPLIT
+      elsif type == 'MERGE'
+        switch_type = org.apache.hadoop.hbase.client.Admin::MasterSwitchType::MERGE
+      else
+        raise ArgumentError, 'only SPLIT or MERGE accepted for type!'
+      end
+      @admin.setSplitOrMergeEnabled(
+        java.lang.Boolean.valueOf(enabled), java.lang.Boolean.valueOf(false),
+        switch_type)[0]
+    end
+
+    #----------------------------------------------------------------------------------------------
+    # Query the current state of the split or merge switch.
+    # Returns the switch's state (true is enabled).
+    def splitormerge_enabled(type)
+      switch_type = nil
+      if type == 'SPLIT'
+        switch_type = org.apache.hadoop.hbase.client.Admin::MasterSwitchType::SPLIT
+      elsif type == 'MERGE'
+        switch_type = org.apache.hadoop.hbase.client.Admin::MasterSwitchType::MERGE
+      else
+        raise ArgumentError, 'only SPLIT or MERGE accepted for type!'
+      end
+      @admin.isSplitOrMergeEnabled(switch_type)
+    end
+
+    def locate_region(table_name, row_key)
+      locator = @connection.getRegionLocator(TableName.valueOf(table_name))
+      begin
+        return locator.getRegionLocation(Bytes.toBytesBinary(row_key))
+      ensure
+        locator.close()
+      end
+    end
+
+    def locate_region(table_name, row_key)
+      locator = @connection.getRegionLocator(TableName.valueOf(table_name))
+      begin
+        return locator.getRegionLocation(Bytes.toBytesBinary(row_key))
+      ensure
+        locator.close()
+      end
+    end
+
+    #----------------------------------------------------------------------------------------------
     # Requests a cluster balance
     # Returns true if balancer ran
-    def balancer()
-      @admin.balancer()
+    def balancer(force)
+      @admin.balancer(java.lang.Boolean::valueOf(force))
     end
 
     #----------------------------------------------------------------------------------------------
@@ -119,6 +195,27 @@ module Hbase
     # Returns the balancer's state (true is enabled).
     def balancer_enabled?()
       @admin.isBalancerEnabled()
+    end
+
+    #----------------------------------------------------------------------------------------------
+    # Requests region normalization for all configured tables in the cluster
+    # Returns true if normalizer ran successfully
+    def normalize()
+      @admin.normalize()
+    end
+
+    #----------------------------------------------------------------------------------------------
+    # Enable/disable region normalizer
+    # Returns previous normalizer switch setting.
+    def normalizer_switch(enableDisable)
+      @admin.setNormalizerRunning(java.lang.Boolean::valueOf(enableDisable))
+    end
+
+    #----------------------------------------------------------------------------------------------
+    # Query the current state of region normalizer.
+    # Returns the state of region normalizer (true is enabled).
+    def normalizer_enabled?()
+      @admin.isNormalizerEnabled()
     end
 
     #----------------------------------------------------------------------------------------------
@@ -214,6 +311,12 @@ module Hbase
     end
 
     #----------------------------------------------------------------------------------------------
+    # Parse arguments and update HTableDescriptor accordingly
+    def parse_htd_args(htd, arg)
+      htd.setNormalizationEnabled(JBoolean.valueOf(arg.delete(NORMALIZATION_ENABLED))) if arg[NORMALIZATION_ENABLED]
+    end
+
+    #----------------------------------------------------------------------------------------------
     # Creates a table
     def create(table_name, *args)
       # Fail if table name is not a string
@@ -306,6 +409,7 @@ module Hbase
           end
         end
         htd.setDurability(org.apache.hadoop.hbase.client.Durability.valueOf(arg.delete(DURABILITY))) if arg[DURABILITY]
+        parse_htd_args(htd, arg)
         set_user_metadata(htd, arg.delete(METADATA)) if arg[METADATA]
         set_descriptor_config(htd, arg.delete(CONFIGURATION)) if arg[CONFIGURATION]
 
@@ -408,10 +512,13 @@ module Hbase
     def truncate_preserve(table_name, conf = @conf)
       h_table = @connection.getTable(TableName.valueOf(table_name))
       locator = @connection.getRegionLocator(TableName.valueOf(table_name))
-      splits = locator.getAllRegionLocations().
-          map{|i| Bytes.toString(i.getRegionInfo().getStartKey)}.
-          delete_if{|k| k == ""}.to_java :String
-      locator.close()
+      begin
+        splits = locator.getAllRegionLocations().
+            map{|i| Bytes.toString(i.getRegionInfo().getStartKey)}.
+            delete_if{|k| k == ""}.to_java :String
+      ensure
+        locator.close()
+      end
 
       table_description = @admin.getTableDescriptor(TableName.valueOf(table_name))
       yield 'Disabling table...' if block_given?
@@ -559,6 +666,7 @@ module Hbase
         htd.setMaxFileSize(JLong.valueOf(arg.delete(MAX_FILESIZE))) if arg[MAX_FILESIZE]
         htd.setReadOnly(JBoolean.valueOf(arg.delete(READONLY))) if arg[READONLY]
         htd.setCompactionEnabled(JBoolean.valueOf(arg[COMPACTION_ENABLED])) if arg[COMPACTION_ENABLED]
+        parse_htd_args(htd, arg)
         htd.setMemStoreFlushSize(JLong.valueOf(arg.delete(MEMSTORE_FLUSHSIZE))) if arg[MEMSTORE_FLUSHSIZE]
         # DEFERRED_LOG_FLUSH is deprecated and was replaced by DURABILITY.  To keep backward compatible, it still exists.
         # However, it has to be set before DURABILITY so that DURABILITY could overwrite if both args are set
@@ -633,6 +741,14 @@ module Hbase
         for k, v in status.getRegionsInTransition()
           puts("    %s" % [v])
         end
+        master = status.getMaster()
+        puts("active master:  %s:%d %d" % [master.getHostname(), master.getPort(), master.getStartcode()])
+        puts("%d backup masters" % [ status.getBackupMastersSize() ])
+        for server in status.getBackupMasters()
+          puts("    %s:%d %d" % \
+            [ server.getHostname(), server.getPort(), server.getStartcode() ])
+        end
+
         master_coprocs = java.util.Arrays.toString(@admin.getMasterCoprocessors())
         if master_coprocs != nil
           puts("master coprocessors: %s" % master_coprocs)
@@ -653,7 +769,7 @@ module Hbase
         end
       elsif format == "replication"
         #check whether replication is enabled or not
-        if (!@admin.getConfiguration().getBoolean(org.apache.hadoop.hbase.HConstants::REPLICATION_ENABLE_KEY, 
+        if (!@admin.getConfiguration().getBoolean(org.apache.hadoop.hbase.HConstants::REPLICATION_ENABLE_KEY,
           org.apache.hadoop.hbase.HConstants::REPLICATION_ENABLE_DEFAULT))
           puts("Please enable replication first.")
         else
@@ -665,7 +781,7 @@ module Hbase
             rSourceString = "       SOURCE:"
             rLoadSink = sl.getReplicationLoadSink()
             rSinkString << " AgeOfLastAppliedOp=" + rLoadSink.getAgeOfLastAppliedOp().to_s
-            rSinkString << ", TimeStampsOfLastAppliedOp=" + 
+            rSinkString << ", TimeStampsOfLastAppliedOp=" +
 			    (java.util.Date.new(rLoadSink.getTimeStampsOfLastAppliedOp())).toString()
             rLoadSourceList = sl.getReplicationLoadSourceList()
             index = 0
@@ -674,7 +790,7 @@ module Hbase
               rSourceString << " PeerID=" + rLoadSource.getPeerID()
               rSourceString << ", AgeOfLastShippedOp=" + rLoadSource.getAgeOfLastShippedOp().to_s
               rSourceString << ", SizeOfLogQueue=" + rLoadSource.getSizeOfLogQueue().to_s
-              rSourceString << ", TimeStampsOfLastShippedOp=" + 
+              rSourceString << ", TimeStampsOfLastShippedOp=" +
 			      (java.util.Date.new(rLoadSource.getTimeStampOfLastShippedOp())).toString()
               rSourceString << ", Replication Lag=" + rLoadSource.getReplicationLag().to_s
               index = index + 1
@@ -694,6 +810,13 @@ module Hbase
       elsif format == "simple"
         load = 0
         regions = 0
+        master = status.getMaster()
+        puts("active master:  %s:%d %d" % [master.getHostname(), master.getPort(), master.getStartcode()])
+        puts("%d backup masters" % [ status.getBackupMastersSize() ])
+        for server in status.getBackupMasters()
+          puts("    %s:%d %d" % \
+            [ server.getHostname(), server.getPort(), server.getStartcode() ])
+        end
         puts("%d live servers" % [ status.getServersSize() ])
         for server in status.getServers()
           puts("    %s:%d %d" % \
@@ -708,7 +831,7 @@ module Hbase
         end
         puts("Aggregate load: %d, regions: %d" % [ load , regions ] )
       else
-        puts "#{status.getServersSize} servers, #{status.getDeadServers} dead, #{'%.4f' % status.getAverageLoad} average load"
+        puts "1 active master, #{status.getBackupMastersSize} backup masters, #{status.getServersSize} servers, #{status.getDeadServers} dead, #{'%.4f' % status.getAverageLoad} average load"
       end
     end
 
@@ -759,6 +882,8 @@ module Hbase
       family.setCompressTags(JBoolean.valueOf(arg.delete(org.apache.hadoop.hbase.HColumnDescriptor::COMPRESS_TAGS))) if arg.include?(org.apache.hadoop.hbase.HColumnDescriptor::COMPRESS_TAGS)
       family.setPrefetchBlocksOnOpen(JBoolean.valueOf(arg.delete(org.apache.hadoop.hbase.HColumnDescriptor::PREFETCH_BLOCKS_ON_OPEN))) if arg.include?(org.apache.hadoop.hbase.HColumnDescriptor::PREFETCH_BLOCKS_ON_OPEN)
       family.setValue(COMPRESSION_COMPACT, arg.delete(COMPRESSION_COMPACT)) if arg.include?(COMPRESSION_COMPACT)
+      family.setMobEnabled(JBoolean.valueOf(arg.delete(org.apache.hadoop.hbase.HColumnDescriptor::IS_MOB))) if arg.include?(org.apache.hadoop.hbase.HColumnDescriptor::IS_MOB)
+      family.setMobThreshold(JLong.valueOf(arg.delete(org.apache.hadoop.hbase.HColumnDescriptor::MOB_THRESHOLD))) if arg.include?(org.apache.hadoop.hbase.HColumnDescriptor::MOB_THRESHOLD)
       if arg.include?(org.apache.hadoop.hbase.HColumnDescriptor::BLOOMFILTER)
         bloomtype = arg.delete(org.apache.hadoop.hbase.HColumnDescriptor::BLOOMFILTER).upcase
         unless org.apache.hadoop.hbase.regionserver.BloomType.constants.include?(bloomtype)
@@ -987,9 +1112,24 @@ module Hbase
 
 
     #----------------------------------------------------------------------------------------------
-    # Drops a table
+    # Drops a namespace
     def drop_namespace(namespace_name)
       @admin.deleteNamespace(namespace_name)
+    end
+
+    #----------------------------------------------------------------------------------------------
+    # Abort a procedure
+    def abort_procedure?(proc_id, may_interrupt_if_running=nil)
+      if may_interrupt_if_running.nil?
+        @admin.abortProcedure(proc_id, true)
+      else
+        @admin.abortProcedure(proc_id, may_interrupt_if_running)
+      end
+    end    
+
+    # List all procedures
+    def list_procedures()
+      @admin.listProcedures()
     end
 
   end

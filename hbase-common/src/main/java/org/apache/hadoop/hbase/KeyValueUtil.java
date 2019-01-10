@@ -18,7 +18,9 @@
 
 package org.apache.hadoop.hbase;
 
+import java.io.DataInput;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -31,6 +33,7 @@ import org.apache.hadoop.hbase.util.ByteBufferUtils;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.IterableUtils;
 import org.apache.hadoop.hbase.util.SimpleMutableByteRange;
+import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.WritableUtils;
 
 import com.google.common.base.Function;
@@ -184,7 +187,7 @@ public class KeyValueUtil {
    * position to the start of the next KeyValue. Does not allocate a new array or copy data.
    * @param bb
    * @param includesMvccVersion
-   * @param includesTags 
+   * @param includesTags
    */
   public static KeyValue nextShallowCopy(final ByteBuffer bb, final boolean includesMvccVersion,
       boolean includesTags) {
@@ -248,7 +251,7 @@ public class KeyValueUtil {
     return createFirstOnRow(CellUtil.cloneRow(in), CellUtil.cloneFamily(in),
       CellUtil.cloneQualifier(in), in.getTimestamp() - 1);
   }
-  
+
 
   /**
    * Create a KeyValue for the specified row, family and qualifier that would be
@@ -543,11 +546,45 @@ public class KeyValueUtil {
   @Deprecated
   public static List<KeyValue> ensureKeyValues(List<Cell> cells) {
     List<KeyValue> lazyList = Lists.transform(cells, new Function<Cell, KeyValue>() {
+      @Override
       public KeyValue apply(Cell arg0) {
         return KeyValueUtil.ensureKeyValue(arg0);
       }
     });
     return new ArrayList<KeyValue>(lazyList);
+  }
+
+  /**
+   * Create a KeyValue reading from the raw InputStream. Named
+   * <code>iscreate</code> so doesn't clash with {@link #create(DataInput)}
+   *
+   * @param in
+   * @param withTags
+   *          whether the keyvalue should include tags are not
+   * @return Created KeyValue OR if we find a length of zero, we will return
+   *         null which can be useful marking a stream as done.
+   * @throws IOException
+   */
+  public static KeyValue iscreate(final InputStream in, boolean withTags) throws IOException {
+    byte[] intBytes = new byte[Bytes.SIZEOF_INT];
+    int bytesRead = 0;
+    while (bytesRead < intBytes.length) {
+      int n = in.read(intBytes, bytesRead, intBytes.length - bytesRead);
+      if (n < 0) {
+        if (bytesRead == 0)
+          return null; // EOF at start is ok
+        throw new IOException("Failed read of int, read " + bytesRead + " bytes");
+      }
+      bytesRead += n;
+    }
+    // TODO: perhaps some sanity check is needed here.
+    byte[] bytes = new byte[Bytes.toInt(intBytes)];
+    IOUtils.readFully(in, bytes, 0, bytes.length);
+    if (withTags) {
+      return new KeyValue(bytes, 0, bytes.length);
+    } else {
+      return new NoTagsKeyValue(bytes, 0, bytes.length);
+    }
   }
 
   public static void oswrite(final Cell cell, final OutputStream out, final boolean withTags)

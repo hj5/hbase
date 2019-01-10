@@ -79,7 +79,7 @@ There is a Canary class can help users to canary-test the HBase cluster status, 
 To see the usage, use the `--help` parameter.
 
 ----
-$ ${HBASE_HOME}/bin/hbase org.apache.hadoop.hbase.tool.Canary -help
+$ ${HBASE_HOME}/bin/hbase canary -help
 
 Usage: bin/hbase org.apache.hadoop.hbase.tool.Canary [opts] [table1 [table2]...] | [regionserver1 [regionserver2]..]
  where [opts] are:
@@ -124,7 +124,7 @@ Following are some examples based on the previous given case.
 ==== Canary test for every column family (store) of every region of every table
 
 ----
-$ ${HBASE_HOME}/bin/hbase org.apache.hadoop.hbase.tool.Canary
+$ ${HBASE_HOME}/bin/hbase canary
 
 3/12/09 03:26:32 INFO tool.Canary: read from region test-01,,1386230156732.0e3c7d77ffb6361ea1b996ac1042ca9a. column family cf1 in 2ms
 13/12/09 03:26:32 INFO tool.Canary: read from region test-01,,1386230156732.0e3c7d77ffb6361ea1b996ac1042ca9a. column family cf2 in 2ms
@@ -145,7 +145,7 @@ This is a default behavior of the this tool does.
 You can also test one or more specific tables.
 
 ----
-$ ${HBASE_HOME}/bin/hbase org.apache.hadoop.hbase.tool.Canary test-01 test-02
+$ ${HBASE_HOME}/bin/hbase canary test-01 test-02
 ----
 
 ==== Canary test with RegionServer granularity
@@ -153,7 +153,7 @@ $ ${HBASE_HOME}/bin/hbase org.apache.hadoop.hbase.tool.Canary test-01 test-02
 This will pick one small piece of data from each RegionServer, and can also put your RegionServer name as input options for canary-test specific RegionServer.
 
 ----
-$ ${HBASE_HOME}/bin/hbase org.apache.hadoop.hbase.tool.Canary -regionserver
+$ ${HBASE_HOME}/bin/hbase canary -regionserver
 
 13/12/09 06:05:17 INFO tool.Canary: Read from table:test-01 on region server:rs2 in 72ms
 13/12/09 06:05:17 INFO tool.Canary: Read from table:test-02 on region server:rs3 in 34ms
@@ -165,7 +165,7 @@ $ ${HBASE_HOME}/bin/hbase org.apache.hadoop.hbase.tool.Canary -regionserver
 This will test both table test-01 and test-02.
 
 ----
-$ ${HBASE_HOME}/bin/hbase org.apache.hadoop.hbase.tool.Canary -e test-0[1-2]
+$ ${HBASE_HOME}/bin/hbase canary -e test-0[1-2]
 ----
 
 ==== Run canary test as daemon mode
@@ -174,13 +174,13 @@ Run repeatedly with interval defined in option `-interval` whose default value i
 This daemon will stop itself and return non-zero error code if any error occurs, due to the default value of option -f is true.
 
 ----
-$ ${HBASE_HOME}/bin/hbase org.apache.hadoop.hbase.tool.Canary -daemon
+$ ${HBASE_HOME}/bin/hbase canary -daemon
 ----
 
 Run repeatedly with internal 5 seconds and will not stop itself even if errors occur in the test.
 
 ----
-$ ${HBASE_HOME}/bin/hbase org.apache.hadoop.hbase.tool.Canary -daemon -interval 50000 -f false
+$ ${HBASE_HOME}/bin/hbase canary -daemon -interval 50000 -f false
 ----
 
 ==== Force timeout if canary test stuck
@@ -190,8 +190,27 @@ Because of this we provide a timeout option to kill the canary test and return a
 This run sets the timeout value to 60 seconds, the default value is 600 seconds.
 
 ----
-$ ${HBASE_HOME}/bin/hbase org.apache.hadoop.hbase.tool.Canary -t 600000
+$ ${HBASE_HOME}/bin/hbase canary -t 600000
 ----
+
+==== Enable write sniffing in canary
+
+By default, the canary tool only check the read operations, it's hard to find the problem in the
+write path. To enable the write sniffing, you can run canary with the `-writeSniffing` option.
+When the write sniffing is enabled, the canary tool will create a hbase table and make sure the
+regions of the table distributed on all region servers. In each sniffing period, the canary will
+try to put data to these regions to check the write availability of each region server.
+----
+$ ${HBASE_HOME}/bin/hbase canary -writeSniffing
+----
+
+The default write table is `hbase:canary` and can be specified by the option `-writeTable`.
+----
+$ ${HBASE_HOME}/bin/hbase canary -writeSniffing -writeTable ns:canary
+----
+
+The default value size of each put is 10 bytes and you can set it by the config key:
+`hbase.canary.write.value.size`.
 
 ==== Running Canary in a Kerberos-enabled Cluster
 
@@ -1325,7 +1344,7 @@ The `VerifyReplication` MapReduce job, which is included in HBase, performs a sy
 +
 [source,bash]
 ----
-$ HADOOP_CLASSPATH=`${HBASE_HOME}/bin/hbase classpath` "${HADOOP_HOME}/bin/hadoop" jar "${HBASE_HOME}/hbase-server-VERSION.jar" verifyrep --starttime=<timestamp> --stoptime=<timestamp> --families=<myFam> <ID> <tableName>
+$ HADOOP_CLASSPATH=`${HBASE_HOME}/bin/hbase classpath` "${HADOOP_HOME}/bin/hadoop" jar "${HBASE_HOME}/hbase-server-VERSION.jar" verifyrep --starttime=<timestamp> --endtime=<timestamp> --families=<myFam> <ID> <tableName>
 ----
 +
 The `VerifyReplication` command prints out `GOODROWS` and `BADROWS` counters to indicate rows that did and did not replicate correctly.
@@ -1544,7 +1563,7 @@ The new layout will be:
 
 === Replication Metrics
 
-The following metrics are exposed at the global region server level and (since HBase 0.95) at the peer level:
+The following metrics are exposed at the global region server level and at the peer level:
 
 `source.sizeOfLogQueue`::
   number of WALs to process (excludes the one which is being processed) at the Replication source
@@ -1557,6 +1576,28 @@ The following metrics are exposed at the global region server level and (since H
 
 `source.ageOfLastShippedOp`::
   age of last batch that was shipped by the replication source
+
+`source.completedLogs`::
+  The number of write-ahead-log files that have completed their acknowledged sending to the peer associated with this source. Increments to this metric are a part of normal operation of HBase replication.
+
+`source.completedRecoverQueues`::
+  The number of recovery queues this source has completed sending to the associated peer. Increments to this metric are a part of normal recovery of HBase replication in the face of failed Region Servers.
+
+`source.uncleanlyClosedLogs`::
+  The number of write-ahead-log files the replication system considered completed after reaching the end of readable entries in the face of an uncleanly closed file.
+
+`source.ignoredUncleanlyClosedLogContentsInBytes`::
+  When a write-ahead-log file is not closed cleanly, there will likely be some entry that has been partially serialized. This metric contains the number of bytes of such entries the HBase replication system believes were remaining at the end of files skipped in the face of an uncleanly closed file. Those bytes should either be in different file or represent a client write that was not acknowledged.
+
+`source.restartedLogReading`::
+  The number of times the HBase replication system detected that it failed to correctly parse a cleanly closed write-ahead-log file. In this circumstance, the system replays the entire log from the beginning, ensuring that no edits fail to be acknowledged by the associated peer. Increments to this metric indicate that the HBase replication system is having difficulty correctly handling failures in the underlying distributed storage system. No dataloss should occur, but you should check Region Server log files for details of the failures.
+
+`source.repeatedLogFileBytes`::
+  When the HBase replication system determines that it needs to replay a given write-ahead-log file, this metric is incremented by the number of bytes the replication system believes had already been acknowledged by the associated peer prior to starting over.
+
+`source.closedLogsWithUnknownFileLength`::
+  Incremented when the HBase replication system believes it is at the end of a write-ahead-log file but it can not determine the length of that file in the underlying distributed storage system. Could indicate dataloss since the replication system is unable to determine if the end of readable entries lines up with the expected end of the file. You should check Region Server log files for details of the failures.
+
 
 === Replication Configuration Options
 

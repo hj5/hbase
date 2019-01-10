@@ -17,7 +17,6 @@
  */
 package org.apache.hadoop.hbase.zookeeper;
 
-import com.google.common.base.Stopwatch;
 import com.google.protobuf.InvalidProtocolBufferException;
 
 import org.apache.commons.logging.Log;
@@ -27,12 +26,17 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.NotAllMetaRegionsOnlineException;
+import org.apache.hadoop.hbase.ServerName;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.client.ClusterConnection;
+import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.HConnection;
 import org.apache.hadoop.hbase.client.RegionReplicaUtil;
 import org.apache.hadoop.hbase.client.RetriesExhaustedException;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.ipc.FailedServerException;
+import org.apache.hadoop.hbase.ipc.PayloadCarryingRpcController;
 import org.apache.hadoop.hbase.ipc.ServerNotRunningYetException;
 import org.apache.hadoop.hbase.master.RegionState;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
@@ -231,11 +235,11 @@ public class MetaTableLocator {
    * @throws InterruptedException if interrupted while waiting
    */
   public void waitMetaRegionLocation(ZooKeeperWatcher zkw) throws InterruptedException {
-    Stopwatch stopwatch = new Stopwatch().start();
+    long startTime = System.currentTimeMillis();
     while (!stopped) {
       try {
         if (waitMetaRegionLocation(zkw, 100) != null) break;
-        long sleepTime = stopwatch.elapsedMillis();
+        long sleepTime = System.currentTimeMillis() - startTime;
         // +1 in case sleepTime=0
         if ((sleepTime + 1) % 10000 == 0) {
           LOG.warn("Have been waiting for meta to be assigned for " + sleepTime + "ms");
@@ -290,7 +294,7 @@ public class MetaTableLocator {
     } catch (RegionServerStoppedException e) {
       // Pass -- server name sends us to a server that is dying or already dead.
     }
-    return (service != null) && verifyRegionLocation(service,
+    return (service != null) && verifyRegionLocation(hConnection, service,
             getMetaRegionLocation(zkw, replicaId), RegionReplicaUtil.getRegionInfoForReplica(
                 HRegionInfo.FIRST_META_REGIONINFO, replicaId).getRegionName());
   }
@@ -310,17 +314,22 @@ public class MetaTableLocator {
   // rather than have to pass it in.  Its made awkward by the fact that the
   // HRI is likely a proxy against remote server so the getServerName needs
   // to be fixed to go to a local method or to a cache before we can do this.
-  private boolean verifyRegionLocation(AdminService.BlockingInterface hostingServer,
-      final ServerName address, final byte [] regionName)
+  private boolean verifyRegionLocation(final Connection connection,
+      AdminService.BlockingInterface hostingServer, final ServerName address,
+      final byte [] regionName)
   throws IOException {
     if (hostingServer == null) {
       LOG.info("Passed hostingServer is null");
       return false;
     }
     Throwable t;
+    PayloadCarryingRpcController controller = null;
+    if (connection instanceof ClusterConnection) {
+      controller = ((ClusterConnection) connection).getRpcControllerFactory().newController();
+    }
     try {
       // Try and get regioninfo from the hosting server.
-      return ProtobufUtil.getRegionInfo(hostingServer, regionName) != null;
+      return ProtobufUtil.getRegionInfo(controller, hostingServer, regionName) != null;
     } catch (ConnectException e) {
       t = e;
     } catch (RetriesExhaustedException e) {
@@ -549,17 +558,20 @@ public class MetaTableLocator {
       final long timeout, Configuration conf)
           throws InterruptedException {
     int numReplicasConfigured = 1;
+
+    List<ServerName> servers = new ArrayList<ServerName>();
+    // Make the blocking call first so that we do the wait to know
+    // the znodes are all in place or timeout.
+    ServerName server = blockUntilAvailable(zkw, timeout);
+    if (server == null) return null;
+    servers.add(server);
+
     try {
       List<String> metaReplicaNodes = zkw.getMetaReplicaNodes();
       numReplicasConfigured = metaReplicaNodes.size();
     } catch (KeeperException e) {
       LOG.warn("Got ZK exception " + e);
     }
-    List<ServerName> servers = new ArrayList<ServerName>(numReplicasConfigured);
-    ServerName server = blockUntilAvailable(zkw, timeout);
-    if (server == null) return null;
-    servers.add(server);
-
     for (int replicaId = 1; replicaId < numReplicasConfigured; replicaId++) {
       // return all replica locations for the meta
       servers.add(getMetaRegionLocation(zkw, replicaId));
@@ -593,19 +605,15 @@ public class MetaTableLocator {
   throws InterruptedException {
     if (timeout < 0) throw new IllegalArgumentException();
     if (zkw == null) throw new IllegalArgumentException();
-    Stopwatch sw = new Stopwatch().start();
+    long startTime = System.currentTimeMillis();
     ServerName sn = null;
-    try {
-      while (true) {
-        sn = getMetaRegionLocation(zkw, replicaId);
-        if (sn != null || sw.elapsedMillis()
-            > timeout - HConstants.SOCKET_RETRY_WAIT_MS) {
-          break;
-        }
-        Thread.sleep(HConstants.SOCKET_RETRY_WAIT_MS);
+    while (true) {
+      sn = getMetaRegionLocation(zkw, replicaId);
+      if (sn != null || (System.currentTimeMillis() - startTime) 
+          > timeout - HConstants.SOCKET_RETRY_WAIT_MS) {
+        break;
       }
-    } finally {
-      sw.stop();
+      Thread.sleep(HConstants.SOCKET_RETRY_WAIT_MS);
     }
     return sn;
   }

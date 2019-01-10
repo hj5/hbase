@@ -77,6 +77,9 @@ module HBaseConstants
   TYPE = 'TYPE'
   NONE = 'NONE'
   VALUE = 'VALUE'
+  POLICY = 'POLICY'
+  FORMATTER = 'FORMATTER'
+  FORMATTER_CLASS = 'FORMATTER_CLASS'
 
   # Load constants from hbase java API
   def self.promote_constants(constants)
@@ -100,6 +103,7 @@ require 'hbase/quotas'
 require 'hbase/replication_admin'
 require 'hbase/security'
 require 'hbase/visibility_labels'
+require 'hbase/rsgroup_admin'
 
 
 include HBaseQuotasConstants

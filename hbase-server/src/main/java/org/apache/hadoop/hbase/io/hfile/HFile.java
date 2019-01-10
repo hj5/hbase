@@ -35,7 +35,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -63,6 +62,7 @@ import org.apache.hadoop.hbase.util.BloomFilterWriter;
 import org.apache.hadoop.hbase.util.ByteStringer;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ChecksumType;
+import org.apache.hadoop.hbase.util.Counter;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.io.Writable;
 
@@ -181,17 +181,19 @@ public class HFile {
   public static final ChecksumType DEFAULT_CHECKSUM_TYPE = ChecksumType.CRC32;
 
   // For measuring number of checksum failures
-  static final AtomicLong checksumFailures = new AtomicLong();
+  static final Counter checksumFailures = new Counter();
 
   // for test purpose
-  public static final AtomicLong dataBlockReadCnt = new AtomicLong(0);
+  public static final Counter dataBlockReadCnt = new Counter();
 
   /**
    * Number of checksum verification failures. It also
    * clears the counter.
    */
   public static final long getChecksumFailuresCount() {
-    return checksumFailures.getAndSet(0);
+    long count = checksumFailures.get();
+    checksumFailures.set(0);
+    return count;
   }
 
   /** API required to write an {@link HFile} */
@@ -439,6 +441,10 @@ public class HFile {
      * Return the file context of the HFile this reader belongs to
      */
     HFileContext getFileContext();
+    
+    boolean isPrimaryReplicaReader();
+
+    void setPrimaryReplicaReader(boolean isPrimaryReplicaReader);
   }
 
   /**
@@ -504,6 +510,19 @@ public class HFile {
     }
     return pickReaderVersion(path, fsdis, size, cacheConf, hfs, conf);
   }
+
+  /**
+  * Creates reader with cache configuration disabled
+  * @param fs filesystem
+  * @param path Path to file to read
+  * @return an active Reader instance
+  * @throws IOException Will throw a CorruptHFileException
+  * (DoNotRetryIOException subtype) if hfile is corrupt/invalid.
+  */
+ public static Reader createReader(
+     FileSystem fs, Path path,  Configuration conf) throws IOException {
+     return createReader(fs, path, CacheConfig.DISABLED, conf);
+ }
 
   /**
    *
@@ -615,82 +634,102 @@ public class HFile {
       return this;
     }
 
+    @Override
     public void clear() {
       this.map.clear();
     }
 
+    @Override
     public Comparator<? super byte[]> comparator() {
       return map.comparator();
     }
 
+    @Override
     public boolean containsKey(Object key) {
       return map.containsKey(key);
     }
 
+    @Override
     public boolean containsValue(Object value) {
       return map.containsValue(value);
     }
 
+    @Override
     public Set<java.util.Map.Entry<byte[], byte[]>> entrySet() {
       return map.entrySet();
     }
 
+    @Override
     public boolean equals(Object o) {
       return map.equals(o);
     }
 
+    @Override
     public byte[] firstKey() {
       return map.firstKey();
     }
 
+    @Override
     public byte[] get(Object key) {
       return map.get(key);
     }
 
+    @Override
     public int hashCode() {
       return map.hashCode();
     }
 
+    @Override
     public SortedMap<byte[], byte[]> headMap(byte[] toKey) {
       return this.map.headMap(toKey);
     }
 
+    @Override
     public boolean isEmpty() {
       return map.isEmpty();
     }
 
+    @Override
     public Set<byte[]> keySet() {
       return map.keySet();
     }
 
+    @Override
     public byte[] lastKey() {
       return map.lastKey();
     }
 
+    @Override
     public byte[] put(byte[] key, byte[] value) {
       return this.map.put(key, value);
     }
 
+    @Override
     public void putAll(Map<? extends byte[], ? extends byte[]> m) {
       this.map.putAll(m);
     }
 
+    @Override
     public byte[] remove(Object key) {
       return this.map.remove(key);
     }
 
+    @Override
     public int size() {
       return map.size();
     }
 
+    @Override
     public SortedMap<byte[], byte[]> subMap(byte[] fromKey, byte[] toKey) {
       return this.map.subMap(fromKey, toKey);
     }
 
+    @Override
     public SortedMap<byte[], byte[]> tailMap(byte[] fromKey) {
       return this.map.tailMap(fromKey);
     }
 
+    @Override
     public Collection<byte[]> values() {
       return map.values();
     }

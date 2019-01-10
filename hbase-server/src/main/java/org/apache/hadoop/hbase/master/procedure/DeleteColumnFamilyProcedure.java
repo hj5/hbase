@@ -57,6 +57,7 @@ public class DeleteColumnFamilyProcedure
   private HTableDescriptor unmodifiedHTableDescriptor;
   private TableName tableName;
   private byte [] familyName;
+  private boolean hasMob;
   private UserGroupInformation user;
 
   private List<HRegionInfo> regionInfoList;
@@ -75,6 +76,7 @@ public class DeleteColumnFamilyProcedure
     this.tableName = tableName;
     this.familyName = familyName;
     this.user = env.getRequestUser().getUGI();
+    this.setOwner(this.user.getShortUserName());
     this.unmodifiedHTableDescriptor = null;
     this.regionInfoList = null;
     this.traceEnabled = null;
@@ -251,8 +253,7 @@ public class DeleteColumnFamilyProcedure
     } else {
       sb.append("Unknown");
     }
-    sb.append(") user=");
-    sb.append(user);
+    sb.append(")");
   }
 
   @Override
@@ -288,6 +289,9 @@ public class DeleteColumnFamilyProcedure
       throw new InvalidFamilyOperationException("Family '" + getColumnFamilyName()
         + "' is the only column family in the table, so it cannot be deleted");
     }
+
+    // whether mob family
+    hasMob = unmodifiedHTableDescriptor.getFamily(familyName).isMobEnabled();
   }
 
   /**
@@ -339,7 +343,7 @@ public class DeleteColumnFamilyProcedure
    **/
   private void deleteFromFs(final MasterProcedureEnv env) throws IOException {
     MasterDDLOperationHelper.deleteColumnFamilyFromFileSystem(env, tableName,
-      getRegionInfoList(env), familyName);
+      getRegionInfoList(env), familyName, hasMob);
   }
 
   /**

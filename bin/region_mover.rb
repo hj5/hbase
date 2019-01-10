@@ -22,6 +22,7 @@
 # on but this script and balancer will end up fighting each other).
 require 'optparse'
 require File.join(File.dirname(__FILE__), 'thread-pool')
+require 'tmpdir'
 include Java
 import org.apache.hadoop.hbase.HConstants
 import org.apache.hadoop.hbase.HBaseConfiguration
@@ -71,8 +72,7 @@ def getServerNameForRegion(admin, r)
       while not mtl.isLocationAvailable(zkw)
         sleep 0.1
       end
-      # Make a fake servername by appending ','
-      metaServer = mtl.getMetaRegionLocation(zkw).toString() + ","
+      metaServer = (mtl.getMetaRegionLocation(zkw).toString()).to_s
       return metaServer
     ensure
       zkw.close()
@@ -154,7 +154,7 @@ def move(admin, r, newServer, original)
       sleep 0.1
     end
   end
-  raise RuntimeError, "Region stuck on #{original}, newserver=#{newServer}" if same
+  raise RuntimeError, "Region " + r.getRegionNameAsString() + " stuck on #{original}, newserver=#{newServer}" if same
   # Assert can Scan from new location.
   isSuccessfulScan(admin, r)
   $LOG.info("Moved region " + r.getRegionNameAsString() + " cost: " + 
@@ -180,11 +180,13 @@ end
 # Remove the servername whose hostname portion matches from the passed
 # array of servers.  Returns as side-effect the servername removed.
 def stripServer(servers, hostname, port)
+  upperCaseHostname = hostname.upcase;
   count = servers.length
   servername = nil
   for server in servers
     hostFromServerName, portFromServerName = getHostPortFromServerName(server)
-    if hostFromServerName == hostname and portFromServerName == port
+    hostFromServerName = hostFromServerName.upcase
+    if hostFromServerName == upperCaseHostname and portFromServerName == port
       servername = servers.delete(server)
     end
   end
@@ -210,7 +212,8 @@ def getServerName(servers, hostname, port)
   servername = nil
   for server in servers
     hostFromServerName, portFromServerName = getHostPortFromServerName(server)
-    if hostFromServerName == hostname and portFromServerName == port
+    hostFromServerName = hostFromServerName.upcase
+    if hostFromServerName == hostname.upcase and portFromServerName == port
       servername = server
       break
     end
@@ -381,7 +384,7 @@ def loadRegions(options, hostname, port)
     end
     next unless exists
     currentServer = getServerNameForRegion(admin, r)
-    if currentServer and currentServer == servername
+    if currentServer and servername and currentServer == servername.to_s
       $LOG.info("Region " + r.getRegionNameAsString() + " (" + counter.to_s +
         " of " + regions.length.to_s + ") already on target server=" + servername)
       counter = counter + 1
@@ -424,11 +427,10 @@ end
 def getFilename(options, targetServer, port)
   filename = options[:file]
   if not filename
-    filename = "/tmp/" + ENV['USER'] + targetServer + ":" + port
+    filename = File.join(Dir.tmpdir(), ENV['USER'] + targetServer + "_" + port.to_s)
   end
   return filename
 end
-
 
 # Do command-line parsing
 options = {}
@@ -437,7 +439,7 @@ optparse = OptionParser.new do |opts|
   opts.separator 'Load or unload regions by moving one at a time'
   options[:file] = nil
   options[:maxthreads] = 1
-  opts.on('-f', '--filename=FILE', 'File to save regions list into unloading, or read from loading; default /tmp/<hostname:port>') do |file|
+  opts.on('-f', '--filename=FILE', 'File to save regions list into unloading, or read from loading; default /USER_TMP_DIR/<hostname_port>') do |file|
     options[:file] = file
   end
   opts.on('-h', '--help', 'Display usage information') do

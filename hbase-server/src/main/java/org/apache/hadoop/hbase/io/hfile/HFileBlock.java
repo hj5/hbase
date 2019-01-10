@@ -24,6 +24,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -47,6 +48,7 @@ import org.apache.hadoop.hbase.util.ChecksumType;
 import org.apache.hadoop.hbase.util.ClassSize;
 import org.apache.hadoop.io.IOUtils;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 
 /**
@@ -695,6 +697,45 @@ public class HFileBlock implements Cacheable {
   }
 
   /**
+   * Read from an input stream. Analogous to
+   * {@link IOUtils#readFully(InputStream, byte[], int, int)}, but uses
+   * positional read and specifies a number of "extra" bytes that would be
+   * desirable but not absolutely necessary to read.
+   *
+   * @param in the input stream to read from
+   * @param position the position within the stream from which to start reading
+   * @param buf the buffer to read into
+   * @param bufOffset the destination offset in the buffer
+   * @param necessaryLen the number of bytes that are absolutely necessary to
+   *     read
+   * @param extraLen the number of extra bytes that would be nice to read
+   * @return true if and only if extraLen is > 0 and reading those extra bytes
+   *     was successful
+   * @throws IOException if failed to read the necessary bytes
+   */
+  @VisibleForTesting
+  static boolean positionalReadWithExtra(FSDataInputStream in,
+      long position, byte[] buf, int bufOffset, int necessaryLen, int extraLen)
+      throws IOException {
+    int bytesRemaining = necessaryLen + extraLen;
+    int bytesRead = 0;
+    while (bytesRead < necessaryLen) {
+      int ret = in.read(position, buf, bufOffset, bytesRemaining);
+      if (ret < 0) {
+        throw new IOException("Premature EOF from inputStream (positional read "
+            + "returned " + ret + ", was trying to read " + necessaryLen
+            + " necessary bytes and " + extraLen + " extra bytes, "
+            + "successfully read " + bytesRead);
+      }
+      position += ret;
+      bufOffset += ret;
+      bytesRemaining -= ret;
+      bytesRead += ret;
+    }
+    return bytesRead != necessaryLen && bytesRemaining <= 0;
+  }
+
+  /**
    * @return the on-disk size of the next block (including the header size)
    *         that was read by peeking into the next block's header
    */
@@ -1300,13 +1341,16 @@ public class HFileBlock implements Cacheable {
       final FSReader owner = this; // handle for inner class
       return new BlockIterator() {
         private long offset = startOffset;
+        // Cache length of next block. Current block has the length of next block in it.
+        private long length = -1;
 
         @Override
         public HFileBlock nextBlock() throws IOException {
           if (offset >= endOffset)
             return null;
-          HFileBlock b = readBlockData(offset, -1, -1, false);
+          HFileBlock b = readBlockData(offset, length, -1, false);
           offset += b.getOnDiskSizeWithHeader();
+          length = b.getNextBlockOnDiskSizeWithHeader();
           return b.unpack(fileContext, owner);
         }
 
@@ -1354,7 +1398,7 @@ public class HFileBlock implements Cacheable {
       if (!pread && streamLock.tryLock()) {
         // Seek + read. Better for scanning.
         try {
-          istream.seek(fileOffset);
+          HFileUtil.seekOnMultipleSources(istream, fileOffset);
 
           long realOffset = istream.getPos();
           if (realOffset != fileOffset) {
@@ -1377,14 +1421,8 @@ public class HFileBlock implements Cacheable {
       } else {
         // Positional read. Better for random reads; or when the streamLock is already locked.
         int extraSize = peekIntoNextBlock ? hdrSize : 0;
-        int ret = istream.read(fileOffset, dest, destOffset, size + extraSize);
-        if (ret < size) {
-          throw new IOException("Positional read of " + size + " bytes " +
-              "failed at offset " + fileOffset + " (returned " + ret + ")");
-        }
-
-        if (ret == size || ret < size + extraSize) {
-          // Could not read the next block's header, or did not try.
+        if (!positionalReadWithExtra(istream, fileOffset, dest, destOffset,
+            size, extraSize)) {
           return -1;
         }
       }
@@ -1416,13 +1454,8 @@ public class HFileBlock implements Cacheable {
     /** Default context used when BlockType != {@link BlockType#ENCODED_DATA}. */
     private final HFileBlockDefaultDecodingContext defaultDecodingCtx;
 
-    private ThreadLocal<PrefetchedHeader> prefetchedHeaderForThread =
-        new ThreadLocal<PrefetchedHeader>() {
-          @Override
-          public PrefetchedHeader initialValue() {
-            return new PrefetchedHeader();
-          }
-        };
+    private AtomicReference<PrefetchedHeader> prefetchedHeader =
+        new AtomicReference<PrefetchedHeader>(new PrefetchedHeader());
 
     public FSReaderImpl(FSDataInputStreamWrapper stream, long fileSize, HFileSystem hfs, Path path,
         HFileContext fileContext) throws IOException {
@@ -1486,7 +1519,7 @@ public class HFileBlock implements Cacheable {
           HFile.LOG.warn(msg);
           throw new IOException(msg); // cannot happen case here
         }
-        HFile.checksumFailures.incrementAndGet(); // update metrics
+        HFile.checksumFailures.increment(); // update metrics
 
         // If we have a checksum failure, we fall back into a mode where
         // the next few reads use HDFS level checksums. We aim to make the
@@ -1566,10 +1599,15 @@ public class HFileBlock implements Cacheable {
       // read this block's header as part of the previous read's look-ahead.
       // And we also want to skip reading the header again if it has already
       // been read.
-      // TODO: How often does this optimization fire? Has to be same thread so the thread local
-      // is pertinent and we have to be reading next block as in a big scan.
-      PrefetchedHeader prefetchedHeader = prefetchedHeaderForThread.get();
-      ByteBuffer headerBuf = prefetchedHeader.offset == offset? prefetchedHeader.buf: null;
+      PrefetchedHeader ph = prefetchedHeader.getAndSet(null); // be multithread safe
+      ByteBuffer headerBuf = null;
+      if (ph != null) {
+        if (ph.offset == offset) {
+          headerBuf = ph.buf;       // our previous read, use the cached buffer
+        } else {
+          prefetchedHeader.set(ph); // not our previous read, put back
+        }
+      }
 
       // Allocate enough space to fit the next block's header too.
       int nextBlockOnDiskSize = 0;
@@ -1614,9 +1652,9 @@ public class HFileBlock implements Cacheable {
               + ", preReadHeaderSize="
               + hdrSize
               + ", header.length="
-              + prefetchedHeader.header.length
+              + prefetchedHeader.get().header.length
               + ", header bytes: "
-              + Bytes.toStringBinary(prefetchedHeader.header, 0,
+              + Bytes.toStringBinary(prefetchedHeader.get().header, 0,
                   hdrSize), ex);
         }
         // if the caller specifies a onDiskSizeWithHeader, validate it.
@@ -1673,8 +1711,10 @@ public class HFileBlock implements Cacheable {
 
       // Set prefetched header
       if (b.hasNextBlockHeader()) {
-        prefetchedHeader.offset = offset + b.getOnDiskSizeWithHeader();
-        System.arraycopy(onDiskBlock, onDiskSizeWithHeader, prefetchedHeader.header, 0, hdrSize);
+        ph = new PrefetchedHeader();
+        ph.offset = offset + b.getOnDiskSizeWithHeader();
+        System.arraycopy(onDiskBlock, onDiskSizeWithHeader, ph.header, 0, hdrSize);
+        prefetchedHeader.set(ph);
       }
 
       b.offset = offset;

@@ -67,6 +67,7 @@ import javax.security.sasl.SaslServer;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.CallQueueTooBigException;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -80,10 +81,14 @@ import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Operation;
 import org.apache.hadoop.hbase.codec.Codec;
+import org.apache.hadoop.hbase.conf.ConfigurationObserver;
 import org.apache.hadoop.hbase.exceptions.RegionMovedException;
+import org.apache.hadoop.hbase.io.BoundedByteBufferPool;
+import org.apache.hadoop.hbase.io.ByteBufferInputStream;
 import org.apache.hadoop.hbase.io.ByteBufferOutputStream;
 import org.apache.hadoop.hbase.io.BoundedByteBufferPool;
 import org.apache.hadoop.hbase.monitoring.MonitoredRPCHandler;
+import org.apache.hadoop.hbase.monitoring.TaskMonitor;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.generated.RPCProtos.CellBlockMeta;
 import org.apache.hadoop.hbase.protobuf.generated.RPCProtos.ConnectionHeader;
@@ -107,6 +112,7 @@ import org.apache.hadoop.hbase.security.token.AuthenticationTokenSecretManager;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Counter;
 import org.apache.hadoop.hbase.util.Pair;
+import org.apache.hadoop.hbase.util.Threads;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.Writable;
@@ -155,7 +161,7 @@ import com.google.protobuf.TextFormat;
  */
 @InterfaceAudience.LimitedPrivate({HBaseInterfaceAudience.COPROC, HBaseInterfaceAudience.PHOENIX})
 @InterfaceStability.Evolving
-public class RpcServer implements RpcServerInterface {
+public class RpcServer implements RpcServerInterface, ConfigurationObserver {
   public static final Log LOG = LogFactory.getLog(RpcServer.class);
   private static final CallQueueTooBigException CALL_QUEUE_TOO_BIG_EXCEPTION
       = new CallQueueTooBigException();
@@ -278,7 +284,9 @@ public class RpcServer implements RpcServerInterface {
    * Datastructure that holds all necessary to a method invocation and then afterward, carries
    * the result.
    */
-  class Call implements RpcCallContext {
+  @InterfaceAudience.LimitedPrivate({HBaseInterfaceAudience.COPROC, HBaseInterfaceAudience.PHOENIX})
+  @InterfaceStability.Evolving
+  public class Call implements RpcCallContext {
     protected int id;                             // the client's call id
     protected BlockingService service;
     protected MethodDescriptor md;
@@ -348,6 +356,14 @@ public class RpcServer implements RpcServerInterface {
 
     protected RequestHeader getHeader() {
       return this.header;
+    }
+
+    public boolean hasPriority() {
+      return this.header.hasPriority();
+    }
+
+    public int getPriority() {
+      return this.header.getPriority();
     }
 
     /*
@@ -586,7 +602,8 @@ public class RpcServer implements RpcServerInterface {
       readPool = Executors.newFixedThreadPool(readThreads,
         new ThreadFactoryBuilder().setNameFormat(
           "RpcServer.reader=%d,bindAddress=" + bindAddress.getHostName() +
-          ",port=" + port).setDaemon(true).build());
+          ",port=" + port).setDaemon(true)
+        .setUncaughtExceptionHandler(Threads.LOGGING_EXCEPTION_HANDLER).build());
       for (int i = 0; i < readThreads; ++i) {
         Reader reader = new Reader();
         readers[i] = reader;
@@ -860,7 +877,7 @@ public class RpcServer implements RpcServerInterface {
         throw ieo;
       } catch (Exception e) {
         if (LOG.isDebugEnabled()) {
-          LOG.debug(getName() + ": Caught exception while reading:" + e.getMessage());
+          LOG.debug(getName() + ": Caught exception while reading:", e);
         }
         count = -1; //so that the (count < 0) block is executed
       }
@@ -906,6 +923,7 @@ public class RpcServer implements RpcServerInterface {
     Responder() throws IOException {
       this.setName("RpcServer.responder");
       this.setDaemon(true);
+      this.setUncaughtExceptionHandler(Threads.LOGGING_EXCEPTION_HANDLER);
       writeSelector = Selector.open(); // create a selector
     }
 
@@ -1172,13 +1190,6 @@ public class RpcServer implements RpcServerInterface {
     }
   }
 
-  @SuppressWarnings("serial")
-  public static class CallQueueTooBigException extends IOException {
-    CallQueueTooBigException() {
-      super();
-    }
-  }
-
   /** Reads calls from a connection and queues them for handling. */
   @edu.umd.cs.findbugs.annotations.SuppressWarnings(
       value="VO_VOLATILE_INCREMENT",
@@ -1322,17 +1333,18 @@ public class RpcServer implements RpcServerInterface {
       }
     }
 
-    private void saslReadAndProcess(byte[] saslToken) throws IOException,
+    private void saslReadAndProcess(ByteBuffer saslToken) throws IOException,
         InterruptedException {
       if (saslContextEstablished) {
         if (LOG.isTraceEnabled())
-          LOG.trace("Have read input token of size " + saslToken.length
+          LOG.trace("Have read input token of size " + saslToken.limit()
               + " for processing by saslServer.unwrap()");
 
         if (!useWrap) {
           processOneRpc(saslToken);
         } else {
-          byte [] plaintextData = saslServer.unwrap(saslToken, 0, saslToken.length);
+          byte[] b = saslToken.array();
+          byte [] plaintextData = saslServer.unwrap(b, saslToken.position(), saslToken.limit());
           processUnwrappedData(plaintextData);
         }
       } else {
@@ -1381,10 +1393,10 @@ public class RpcServer implements RpcServerInterface {
             }
           }
           if (LOG.isDebugEnabled()) {
-            LOG.debug("Have read input token of size " + saslToken.length
+            LOG.debug("Have read input token of size " + saslToken.limit()
                 + " for processing by saslServer.evaluateResponse()");
           }
-          replyToken = saslServer.evaluateResponse(saslToken);
+          replyToken = saslServer.evaluateResponse(saslToken.array());
         } catch (IOException e) {
           IOException sendToClient = e;
           Throwable cause = e;
@@ -1575,6 +1587,8 @@ public class RpcServer implements RpcServerInterface {
           throw new IllegalArgumentException("Unexpected data length "
               + dataLength + "!! from " + getHostAddress());
         }
+
+       // TODO: check dataLength against some limit so that the client cannot OOM the server
         data = ByteBuffer.allocate(dataLength);
 
         // Increment the rpc count. This counter will be decreased when we write
@@ -1604,9 +1618,9 @@ public class RpcServer implements RpcServerInterface {
         }
 
         if (useSasl) {
-          saslReadAndProcess(data.array());
+          saslReadAndProcess(data);
         } else {
-          processOneRpc(data.array());
+          processOneRpc(data);
         }
 
       } finally {
@@ -1635,8 +1649,9 @@ public class RpcServer implements RpcServerInterface {
     }
 
     // Reads the connection header following version
-    private void processConnectionHeader(byte[] buf) throws IOException {
-      this.connectionHeader = ConnectionHeader.parseFrom(buf);
+    private void processConnectionHeader(ByteBuffer buf) throws IOException {
+      this.connectionHeader = ConnectionHeader.parseFrom(
+        new ByteBufferInputStream(buf));
       String serviceName = connectionHeader.getServiceName();
       if (serviceName == null) throw new EmptyServiceNameException();
       this.service = getService(services, serviceName);
@@ -1739,13 +1754,14 @@ public class RpcServer implements RpcServerInterface {
         if (unwrappedData.remaining() == 0) {
           unwrappedDataLengthBuffer.clear();
           unwrappedData.flip();
-          processOneRpc(unwrappedData.array());
+          processOneRpc(unwrappedData);
           unwrappedData = null;
         }
       }
     }
 
-    private void processOneRpc(byte[] buf) throws IOException, InterruptedException {
+
+    private void processOneRpc(ByteBuffer buf) throws IOException, InterruptedException {
       if (connectionHeaderRead) {
         processRequest(buf);
       } else {
@@ -1758,6 +1774,7 @@ public class RpcServer implements RpcServerInterface {
             connectionHeader.getServiceName() + " is unauthorized for user: " + user);
         }
       }
+      rpcCount.destroy();
     }
 
     /**
@@ -1766,16 +1783,16 @@ public class RpcServer implements RpcServerInterface {
      * @throws IOException
      * @throws InterruptedException
      */
-    protected void processRequest(byte[] buf) throws IOException, InterruptedException {
-      long totalRequestSize = buf.length;
+    protected void processRequest(ByteBuffer buf) throws IOException, InterruptedException {
+      long totalRequestSize = buf.limit();
       int offset = 0;
       // Here we read in the header.  We avoid having pb
       // do its default 4k allocation for CodedInputStream.  We force it to use backing array.
-      CodedInputStream cis = CodedInputStream.newInstance(buf, offset, buf.length);
+      CodedInputStream cis = CodedInputStream.newInstance(buf.array(), offset, buf.limit());
       int headerSize = cis.readRawVarint32();
       offset = cis.getTotalBytesRead();
       Message.Builder builder = RequestHeader.newBuilder();
-      ProtobufUtil.mergeFrom(builder, buf, offset, headerSize);
+      ProtobufUtil.mergeFrom(builder, cis, headerSize);
       RequestHeader header = (RequestHeader) builder.build();
       offset += headerSize;
       int id = header.getCallId();
@@ -1791,8 +1808,9 @@ public class RpcServer implements RpcServerInterface {
             responder, totalRequestSize, null, null);
         ByteArrayOutputStream responseBuffer = new ByteArrayOutputStream();
         metrics.exception(CALL_QUEUE_TOO_BIG_EXCEPTION);
+        InetSocketAddress address = getListenerAddress();
         setupResponse(responseBuffer, callTooBig, CALL_QUEUE_TOO_BIG_EXCEPTION,
-            "Call queue is full on " + getListenerAddress() +
+            "Call queue is full on " + (address != null ? address : "(channel closed)") +
                 ", is hbase.ipc.server.max.callqueue.size too small?");
         responder.doRespond(callTooBig);
         return;
@@ -1805,23 +1823,23 @@ public class RpcServer implements RpcServerInterface {
           md = this.service.getDescriptorForType().findMethodByName(header.getMethodName());
           if (md == null) throw new UnsupportedOperationException(header.getMethodName());
           builder = this.service.getRequestPrototype(md).newBuilderForType();
-          // To read the varint, I need an inputstream; might as well be a CIS.
-          cis = CodedInputStream.newInstance(buf, offset, buf.length);
+          cis.resetSizeCounter();
           int paramSize = cis.readRawVarint32();
           offset += cis.getTotalBytesRead();
           if (builder != null) {
-            ProtobufUtil.mergeFrom(builder, buf, offset, paramSize);
+            ProtobufUtil.mergeFrom(builder, cis, paramSize);
             param = builder.build();
           }
           offset += paramSize;
         }
         if (header.hasCellBlockMeta()) {
-          cellScanner = ipcUtil.createCellScanner(this.codec, this.compressionCodec,
-            buf, offset, buf.length);
+          buf.position(offset);
+          cellScanner = ipcUtil.createCellScanner(this.codec, this.compressionCodec, buf);
         }
       } catch (Throwable t) {
-        String msg = getListenerAddress() + " is unable to read call parameter from client " +
-            getHostAddress();
+        InetSocketAddress address = getListenerAddress();
+        String msg = (address != null ? address : "(channel closed)") +
+            " is unable to read call parameter from client " + getHostAddress();
         LOG.warn(msg, t);
 
         metrics.exception(t);
@@ -1850,7 +1868,17 @@ public class RpcServer implements RpcServerInterface {
           : null;
       Call call = new Call(id, this.service, md, header, param, cellScanner, this, responder,
               totalRequestSize, traceInfo, RpcServer.getRemoteIp());
-      scheduler.dispatch(new CallRunner(RpcServer.this, call));
+      if (!scheduler.dispatch(new CallRunner(RpcServer.this, call))) {
+        callQueueSize.add(-1 * call.getSize());
+
+        ByteArrayOutputStream responseBuffer = new ByteArrayOutputStream();
+        metrics.exception(CALL_QUEUE_TOO_BIG_EXCEPTION);
+        InetSocketAddress address = getListenerAddress();
+        setupResponse(responseBuffer, call, CALL_QUEUE_TOO_BIG_EXCEPTION,
+            "Call queue is full on " + (address != null ? address : "(channel closed)") +
+            ", too many items queued ?");
+        responder.doRespond(call);
+      }
     }
 
     private boolean authorizeConnection() throws IOException {
@@ -2067,6 +2095,14 @@ public class RpcServer implements RpcServerInterface {
   }
 
   @Override
+  public void onConfigurationChange(Configuration newConf) {
+    // initReconfigurable(newConf);
+    if (scheduler instanceof ConfigurationObserver) {
+      ((ConfigurationObserver)scheduler).onConfigurationChange(newConf);
+    }
+  }
+
+  @Override
   public void refreshAuthManager(PolicyProvider pp) {
     // Ignore warnings that this should be accessed in a static way instead of via an instance;
     // it'll break if you go via static route.
@@ -2123,10 +2159,13 @@ public class RpcServer implements RpcServerInterface {
             " processingTime: " + processingTime +
             " totalTime: " + totalTime);
       }
+      long requestSize = param.getSerializedSize();
+      long responseSize = result.getSerializedSize();
       metrics.dequeuedCall(qTime);
       metrics.processedCall(processingTime);
       metrics.totalCall(totalTime);
-      long responseSize = result.getSerializedSize();
+      metrics.receivedRequest(requestSize);
+      metrics.sentResponse(responseSize);
       // log any RPC responses that are slower than the configured warn
       // response time or larger than configured warning size
       boolean tooSlow = (processingTime > warnResponseTime && warnResponseTime > -1);
@@ -2241,11 +2280,16 @@ public class RpcServer implements RpcServerInterface {
   }
 
   /**
-   * Return the socket (ip+port) on which the RPC server is listening to.
-   * @return the socket (ip+port) on which the RPC server is listening to.
+   * Return the socket (ip+port) on which the RPC server is listening to. May return null if
+   * the listener channel is closed.
+   * @return the socket (ip+port) on which the RPC server is listening to, or null if this
+   * information cannot be determined
    */
   @Override
   public synchronized InetSocketAddress getListenerAddress() {
+    if (listener == null) {
+      return null;
+    }
     return listener.getAddress();
   }
 
@@ -2282,7 +2326,8 @@ public class RpcServer implements RpcServerInterface {
    * @param user client user
    * @param connection incoming connection
    * @param addr InetAddress of incoming connection
-   * @throws org.apache.hadoop.security.authorize.AuthorizationException when the client isn't authorized to talk the protocol
+   * @throws org.apache.hadoop.security.authorize.AuthorizationException
+   *         when the client isn't authorized to talk the protocol
    */
   public void authorize(UserGroupInformation user, ConnectionHeader connection, InetAddress addr)
   throws AuthorizationException {
@@ -2464,6 +2509,18 @@ public class RpcServer implements RpcServerInterface {
     BlockingServiceAndInterface bsasi =
         getServiceAndInterface(services, serviceName);
     return bsasi == null? null: bsasi.getBlockingService();
+  }
+
+  static MonitoredRPCHandler getStatus() {
+    // It is ugly the way we park status up in RpcServer.  Let it be for now.  TODO.
+    MonitoredRPCHandler status = RpcServer.MONITORED_RPC.get();
+    if (status != null) {
+      return status;
+    }
+    status = TaskMonitor.get().createRPCStatus(Thread.currentThread().getName());
+    status.pause("Waiting for a call");
+    RpcServer.MONITORED_RPC.set(status);
+    return status;
   }
 
   /** Returns the remote side ip address when invoked inside an RPC

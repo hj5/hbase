@@ -43,6 +43,7 @@ import org.apache.hadoop.hbase.regionserver.compactions.CompactionContext;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionProgress;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionRequest;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionThroughputController;
+import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.util.Pair;
 
 /**
@@ -185,13 +186,27 @@ public interface Store extends HeapSize, StoreConfigInformation, PropagatingConf
 
   CompactionContext requestCompaction() throws IOException;
 
+  /**
+   * @deprecated see requestCompaction(int, CompactionRequest, User)
+   */
+  @Deprecated
   CompactionContext requestCompaction(int priority, CompactionRequest baseRequest)
+      throws IOException;
+
+  CompactionContext requestCompaction(int priority, CompactionRequest baseRequest, User user)
       throws IOException;
 
   void cancelRequestedCompaction(CompactionContext compaction);
 
+  /**
+   * @deprecated see compact(CompactionContext, CompactionThroughputController, User)
+   */
+  @Deprecated
   List<StoreFile> compact(CompactionContext compaction,
       CompactionThroughputController throughputController) throws IOException;
+
+  List<StoreFile> compact(CompactionContext compaction,
+    CompactionThroughputController throughputController, User user) throws IOException;
 
   /**
    * @return true if we should run a major compaction.
@@ -245,10 +260,11 @@ public interface Store extends HeapSize, StoreConfigInformation, PropagatingConf
    * This method should only be called from Region. It is assumed that the ranges of values in the
    * HFile fit within the stores assigned region. (assertBulkLoadHFileOk checks this)
    *
+   * @param family the column family
    * @param srcPathStr
-   * @param sequenceId sequence Id associated with the HFile
+   * @param dstPath
    */
-  Path bulkLoadHFile(String srcPathStr, long sequenceId) throws IOException;
+  Path bulkLoadHFile(byte[] family, String srcPathStr, Path dstPath) throws IOException;
 
   // General accessors into the state of the store
   // TODO abstract some of this out into a metrics class
@@ -303,6 +319,31 @@ public interface Store extends HeapSize, StoreConfigInformation, PropagatingConf
    * @return Count of store files
    */
   int getStorefilesCount();
+
+  /**
+   * @return Max age of store files in this store
+   */
+  long getMaxStoreFileAge();
+
+  /**
+   * @return Min age of store files in this store
+   */
+  long getMinStoreFileAge();
+
+  /**
+   *  @return Average age of store files in this store, 0 if no store files
+   */
+  long getAvgStoreFileAge();
+
+  /**
+   *  @return Number of reference files in this store
+   */
+  long getNumReferenceFiles();
+
+  /**
+   *  @return Number of HFiles in this store
+   */
+  long getNumHFiles();
 
   /**
    * @return The size of the store files, in bytes, uncompressed.
@@ -371,6 +412,11 @@ public interface Store extends HeapSize, StoreConfigInformation, PropagatingConf
    * @return The total size of data flushed to disk, in bytes
    */
   long getFlushedCellsSize();
+
+  /**
+   * @return The total size of out output files on disk, in bytes
+   */
+  long getFlushedOutputFileSize();
 
   /**
    * @return The number of cells processed during minor compactions
@@ -442,4 +488,6 @@ public interface Store extends HeapSize, StoreConfigInformation, PropagatingConf
   void refreshStoreFiles(Collection<String> newFiles) throws IOException;
 
   void bulkLoadHFile(StoreFileInfo fileInfo) throws IOException;
+
+  boolean isPrimaryReplicaStore();
 }

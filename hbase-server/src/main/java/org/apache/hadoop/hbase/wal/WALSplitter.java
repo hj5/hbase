@@ -239,24 +239,24 @@ public class WALSplitter {
   // log splitting. Used by tools and unit tests. It should be package private.
   // It is public only because UpgradeTo96 and TestWALObserver are in different packages,
   // which uses this method to do log splitting.
-  public static List<Path> split(Path rootDir, Path logDir, Path oldLogDir,
-      FileSystem fs, Configuration conf, final WALFactory factory) throws IOException {
+  public static List<Path> split(Path walRootDir, Path logDir, Path oldLogDir,
+      FileSystem walFs, Configuration conf, final WALFactory factory) throws IOException {
     final FileStatus[] logfiles = SplitLogManager.getFileList(conf,
         Collections.singletonList(logDir), null);
     List<Path> splits = new ArrayList<Path>();
     if (logfiles != null && logfiles.length > 0) {
       for (FileStatus logfile: logfiles) {
-        WALSplitter s = new WALSplitter(factory, conf, rootDir, fs, null, null,
+        WALSplitter s = new WALSplitter(factory, conf, walRootDir, walFs, null, null,
             RecoveryMode.LOG_SPLITTING);
         if (s.splitLogFile(logfile, null)) {
-          finishSplitLogFile(rootDir, oldLogDir, logfile.getPath(), conf);
+          finishSplitLogFile(walRootDir, oldLogDir, logfile.getPath(), conf);
           if (s.outputSink.splits != null) {
             splits.addAll(s.outputSink.splits);
           }
         }
       }
     }
-    if (!fs.delete(logDir, true)) {
+    if (!walFs.delete(logDir, true)) {
       throw new IOException("Unable to delete src dir: " + logDir);
     }
     return splits;
@@ -424,7 +424,7 @@ public class WALSplitter {
    */
   public static void finishSplitLogFile(String logfile,
       Configuration conf)  throws IOException {
-    Path rootdir = FSUtils.getRootDir(conf);
+    Path rootdir = FSUtils.getWALRootDir(conf);
     Path oldLogDir = new Path(rootdir, HConstants.HREGION_OLDLOGDIR_NAME);
     Path logPath;
     if (FSUtils.isStartingWithPath(rootdir, logfile)) {
@@ -467,7 +467,7 @@ public class WALSplitter {
       final List<Path> corruptedLogs,
       final List<Path> processedLogs, final Path oldLogDir,
       final FileSystem fs, final Configuration conf) throws IOException {
-    final Path corruptDir = new Path(FSUtils.getRootDir(conf), conf.get(
+    final Path corruptDir = new Path(FSUtils.getWALRootDir(conf), conf.get(
         "hbase.regionserver.hlog.splitlog.corrupt.dir",  HConstants.CORRUPT_DIR_NAME));
 
     if (!fs.mkdirs(corruptDir)) {
@@ -1502,21 +1502,27 @@ public class WALSplitter {
       if (maxSeqIdInStores == null || maxSeqIdInStores.isEmpty()) {
         return;
       }
-      List<Cell> skippedCells = new ArrayList<Cell>();
+      // Create the array list for the cells that aren't filtered.
+      // We make the assumption that most cells will be kept.
+      ArrayList<Cell> keptCells = new ArrayList<Cell>(logEntry.getEdit().getCells().size());
       for (Cell cell : logEntry.getEdit().getCells()) {
-        if (!CellUtil.matchingFamily(cell, WALEdit.METAFAMILY)) {
+        if (CellUtil.matchingFamily(cell, WALEdit.METAFAMILY)) {
+          keptCells.add(cell);
+        } else {
           byte[] family = CellUtil.cloneFamily(cell);
           Long maxSeqId = maxSeqIdInStores.get(family);
           // Do not skip cell even if maxSeqId is null. Maybe we are in a rolling upgrade,
           // or the master was crashed before and we can not get the information.
-          if (maxSeqId != null && maxSeqId.longValue() >= logEntry.getKey().getLogSeqNum()) {
-            skippedCells.add(cell);
+          if (maxSeqId == null || maxSeqId.longValue() < logEntry.getKey().getLogSeqNum()) {
+            keptCells.add(cell);
           }
         }
       }
-      if (!skippedCells.isEmpty()) {
-        logEntry.getEdit().getCells().removeAll(skippedCells);
-      }
+
+      // Anything in the keptCells array list is still live.
+      // So rather than removing the cells from the array list
+      // which would be an O(n^2) operation, we just replace the list
+      logEntry.getEdit().setCells(keptCells);
     }
 
     @Override

@@ -99,6 +99,7 @@ public class DefaultMemStore implements MemStore {
   volatile MemStoreLAB allocator;
   volatile MemStoreLAB snapshotAllocator;
   volatile long snapshotId;
+  volatile boolean tagsPresent;
 
   /**
    * Default constructor. Used for tests.
@@ -170,8 +171,11 @@ public class DefaultMemStore implements MemStore {
         timeOfOldestEdit = Long.MAX_VALUE;
       }
     }
-    return new MemStoreSnapshot(this.snapshotId, snapshot.size(), this.snapshotSize,
-        this.snapshotTimeRangeTracker, new CollectionBackedScanner(snapshot, this.comparator));
+    MemStoreSnapshot memStoreSnapshot = new MemStoreSnapshot(this.snapshotId, snapshot.size(), this.snapshotSize,
+        this.snapshotTimeRangeTracker, new CollectionBackedScanner(snapshot, this.comparator),
+        this.tagsPresent);
+    this.tagsPresent = false;
+    return memStoreSnapshot;
   }
 
   /**
@@ -183,6 +187,7 @@ public class DefaultMemStore implements MemStore {
   @Override
   public void clearSnapshot(long id) throws UnexpectedStateException {
     MemStoreLAB tmpAllocator = null;
+    if (this.snapshotId == -1) return;  // already cleared
     if (this.snapshotId != id) {
       throw new UnexpectedStateException("Current snapshot id is " + this.snapshotId + ",passed "
           + id);
@@ -233,6 +238,13 @@ public class DefaultMemStore implements MemStore {
 
   private boolean addToCellSet(Cell e) {
     boolean b = this.cellSet.add(e);
+    // In no tags case this NoTagsKeyValue.getTagsLength() is a cheap call.
+    // When we use ACL CP or Visibility CP which deals with Tags during
+    // mutation, the TagRewriteCell.getTagsLength() is a cheaper call. We do not
+    // parse the byte[] to identify the tags length.
+    if(e.getTagsLength() > 0) {
+      tagsPresent = true;
+    }
     setOldestEditTimeToNow();
     return b;
   }
@@ -958,29 +970,37 @@ public class DefaultMemStore implements MemStore {
      * specified key, then seek to the first KeyValue of previous row
      */
     @Override
-    public synchronized boolean seekToPreviousRow(Cell key) {
-      Cell firstKeyOnRow = KeyValueUtil.createFirstOnRow(key.getRowArray(), key.getRowOffset(),
-          key.getRowLength());
-      SortedSet<Cell> cellHead = cellSetAtCreation.headSet(firstKeyOnRow);
-      Cell cellSetBeforeRow = cellHead.isEmpty() ? null : cellHead.last();
-      SortedSet<Cell> snapshotHead = snapshotAtCreation
-          .headSet(firstKeyOnRow);
-      Cell snapshotBeforeRow = snapshotHead.isEmpty() ? null : snapshotHead
-          .last();
-      Cell lastCellBeforeRow = getHighest(cellSetBeforeRow, snapshotBeforeRow);
-      if (lastCellBeforeRow == null) {
-        theNext = null;
-        return false;
-      }
-      Cell firstKeyOnPreviousRow = KeyValueUtil.createFirstOnRow(lastCellBeforeRow.getRowArray(),
-          lastCellBeforeRow.getRowOffset(), lastCellBeforeRow.getRowLength());
-      this.stopSkippingCellsIfNextRow = true;
-      seek(firstKeyOnPreviousRow);
-      this.stopSkippingCellsIfNextRow = false;
-      if (peek() == null
-          || comparator.compareRows(peek(), firstKeyOnPreviousRow) > 0) {
-        return seekToPreviousRow(lastCellBeforeRow);
-      }
+    public synchronized boolean seekToPreviousRow(Cell originalKey) {
+      boolean keepSeeking = false;
+      Cell key = originalKey;
+      do {
+        Cell firstKeyOnRow = KeyValueUtil.createFirstOnRow(key.getRowArray(), key.getRowOffset(),
+            key.getRowLength());
+        SortedSet<Cell> cellHead = cellSetAtCreation.headSet(firstKeyOnRow);
+        Cell cellSetBeforeRow = cellHead.isEmpty() ? null : cellHead.last();
+        SortedSet<Cell> snapshotHead = snapshotAtCreation
+            .headSet(firstKeyOnRow);
+        Cell snapshotBeforeRow = snapshotHead.isEmpty() ? null : snapshotHead
+            .last();
+        Cell lastCellBeforeRow = getHighest(cellSetBeforeRow, snapshotBeforeRow);
+        if (lastCellBeforeRow == null) {
+          theNext = null;
+          return false;
+        }
+        Cell firstKeyOnPreviousRow = KeyValueUtil.createFirstOnRow(lastCellBeforeRow.getRowArray(),
+            lastCellBeforeRow.getRowOffset(), lastCellBeforeRow.getRowLength());
+        this.stopSkippingCellsIfNextRow = true;
+        seek(firstKeyOnPreviousRow);
+        this.stopSkippingCellsIfNextRow = false;
+        if (peek() == null
+            || comparator.compareRows(peek(), firstKeyOnPreviousRow) > 0) {
+          keepSeeking = true;
+          key = firstKeyOnPreviousRow;
+          continue;
+        } else {
+          keepSeeking = false;
+        }
+      } while (keepSeeking);
       return true;
     }
 
@@ -1005,8 +1025,8 @@ public class DefaultMemStore implements MemStore {
     }
   }
 
-  public final static long FIXED_OVERHEAD = ClassSize.align(
-      ClassSize.OBJECT + (9 * ClassSize.REFERENCE) + (3 * Bytes.SIZEOF_LONG));
+  public final static long FIXED_OVERHEAD = ClassSize.align(ClassSize.OBJECT
+      + (9 * ClassSize.REFERENCE) + (3 * Bytes.SIZEOF_LONG) + Bytes.SIZEOF_BOOLEAN);
 
   public final static long DEEP_OVERHEAD = ClassSize.align(FIXED_OVERHEAD +
       ClassSize.ATOMIC_LONG + (2 * ClassSize.TIMERANGE_TRACKER) +

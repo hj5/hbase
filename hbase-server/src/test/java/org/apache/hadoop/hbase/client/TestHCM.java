@@ -60,6 +60,7 @@ import org.apache.hadoop.hbase.client.ConnectionManager.HConnectionImplementatio
 import org.apache.hadoop.hbase.coprocessor.BaseRegionObserver;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
+import org.apache.hadoop.hbase.exceptions.ClientExceptionsUtil;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
 import org.apache.hadoop.hbase.exceptions.RegionMovedException;
 import org.apache.hadoop.hbase.filter.Filter;
@@ -126,9 +127,19 @@ public class TestHCM {
     }
   }
 
+  public static class SleepCoprocessor extends BaseRegionObserver {
+    public static final int SLEEP_TIME = 5000;
+
+    @Override public void preGetOp(final ObserverContext<RegionCoprocessorEnvironment> e,
+        final Get get, final List<Cell> results) throws IOException {
+      Threads.sleep(SLEEP_TIME);
+    }
+  }
+
   @BeforeClass
   public static void setUpBeforeClass() throws Exception {
     TEST_UTIL.getConfiguration().setBoolean(HConstants.STATUS_PUBLISHED, true);
+    TEST_UTIL.getConfiguration().setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, 5);
     TEST_UTIL.startMiniCluster(2);
   }
 
@@ -299,7 +310,7 @@ public class TestHCM {
     HTableDescriptor hdt = TEST_UTIL.createTableDescriptor("HCM-testOperationTimeout");
     hdt.addCoprocessor(SleepAndFailFirstTime.class.getName());
     HTable table = TEST_UTIL.createTable(hdt, new byte[][]{FAM_NAM}, TEST_UTIL.getConfiguration());
-
+    table.setRpcTimeout(Integer.MAX_VALUE);
     // Check that it works if the timeout is big enough
     table.setOperationTimeout(120 * 1000);
     table.get(new Get(FAM_NAM));
@@ -322,6 +333,20 @@ public class TestHCM {
     }
   }
 
+  @Test(expected = RetriesExhaustedException.class)
+  public void testRpcTimeout() throws Exception {
+    HTableDescriptor hdt = TEST_UTIL.createTableDescriptor("HCM-testRpcTimeout");
+    hdt.addCoprocessor(SleepCoprocessor.class.getName());
+    Configuration c = new Configuration(TEST_UTIL.getConfiguration());
+
+    try (Table t = TEST_UTIL.createTable(hdt, new byte[][] { FAM_NAM }, c)) {
+      assert t instanceof HTable;
+      HTable table = (HTable) t;
+      table.setRpcTimeout(SleepCoprocessor.SLEEP_TIME / 2);
+      table.setOperationTimeout(SleepCoprocessor.SLEEP_TIME * 100);
+      table.get(new Get(FAM_NAM));
+    }
+  }
 
   private void testConnectionClose(boolean allowsInterrupt) throws Exception {
     TableName tableName = TableName.valueOf("HCM-testConnectionClose" + allowsInterrupt);
@@ -689,7 +714,7 @@ public class TestHCM {
       Assert.assertArrayEquals(e.getRow(0).getRow(), ROW);
 
       // Check that we unserialized the exception as expected
-      Throwable cause = ConnectionManager.findException(e.getCause(0));
+      Throwable cause = ClientExceptionsUtil.findException(e.getCause(0));
       Assert.assertNotNull(cause);
       Assert.assertTrue(cause instanceof RegionMovedException);
     }

@@ -41,6 +41,7 @@ import java.util.SortedMap;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.Vector;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.ExecutionException;
@@ -113,6 +114,8 @@ import org.apache.hadoop.hbase.client.RegionReplicaUtil;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.RowMutations;
 import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.io.FileLink;
+import org.apache.hadoop.hbase.io.HFileLink;
 import org.apache.hadoop.hbase.io.hfile.CacheConfig;
 import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.master.MasterFileSystem;
@@ -210,6 +213,9 @@ public class HBaseFsck extends Configured implements Closeable {
   // AlreadyBeingCreatedException which is implies timeout on this operations up to
   // HdfsConstants.LEASE_SOFTLIMIT_PERIOD (60 seconds).
   private static final int DEFAULT_WAIT_FOR_LOCK_TIMEOUT = 80; // seconds
+  private static final int DEFAULT_MAX_CREATE_ZNODE_ATTEMPTS = 5;
+  private static final int DEFAULT_CREATE_ZNODE_ATTEMPT_SLEEP_INTERVAL = 200; // milliseconds
+  private static final int DEFAULT_CREATE_ZNODE_ATTEMPT_MAX_SLEEP_TIME = 5000; // milliseconds
 
   /**********************
    * Internal resources
@@ -236,6 +242,7 @@ public class HBaseFsck extends Configured implements Closeable {
    ***********/
   private static boolean details = false; // do we display the full report
   private long timelag = DEFAULT_TIME_LAG; // tables whose modtime is older
+  private static boolean disableSplitAndMerge = false; // disable split and merge
   private boolean fixAssignments = false; // fix assignment errors?
   private boolean fixMeta = false; // fix meta errors?
   private boolean checkHdfs = true; // load and check fs consistency?
@@ -245,7 +252,9 @@ public class HBaseFsck extends Configured implements Closeable {
   private boolean fixTableOrphans = false; // fix fs holes (missing .tableinfo)
   private boolean fixVersionFile = false; // fix missing hbase.version file in hdfs
   private boolean fixSplitParents = false; // fix lingering split parents
+  private boolean removeParents = false; // remove split parents
   private boolean fixReferenceFiles = false; // fix lingering reference store file
+  private boolean fixHFileLinks = false; // fix lingering HFileLinks
   private boolean fixEmptyMetaCells = false; // fix (remove) empty REGIONINFO_QUALIFIER rows
   private boolean fixTableLocks = false; // fix table locks which are expired
   private boolean fixTableZNodes = false; // fix table Znodes which are orphaned
@@ -310,7 +319,11 @@ public class HBaseFsck extends Configured implements Closeable {
    */
   private Set<TableName> orphanedTableZNodes = new HashSet<TableName>();
   private final RetryCounterFactory lockFileRetryCounterFactory;
-  
+  private final RetryCounterFactory createZNodeRetryCounterFactory;
+
+  private ZooKeeperWatcher zkw = null;
+  private String hbckEphemeralNodePath = null;
+  private boolean hbckZodeCreated = false;
 
   /**
    * Constructor
@@ -321,23 +334,12 @@ public class HBaseFsck extends Configured implements Closeable {
    */
   public HBaseFsck(Configuration conf) throws MasterNotRunningException,
       ZooKeeperConnectionException, IOException, ClassNotFoundException {
-    super(conf);
-    // make a copy, just to be sure we're not overriding someone else's config
-    setConf(HBaseConfiguration.create(getConf()));
-    // disable blockcache for tool invocation, see HBASE-10500
-    getConf().setFloat(HConstants.HFILE_BLOCK_CACHE_SIZE_KEY, 0);
-    // Disable usage of meta replicas in hbck
-    getConf().setBoolean(HConstants.USE_META_REPLICAS, false);
-    errors = getErrorReporter(conf);
+    this(conf, createThreadPool(conf));
+  }
 
+  private static ExecutorService createThreadPool(Configuration conf) {
     int numThreads = conf.getInt("hbasefsck.numthreads", MAX_NUM_THREADS);
-    executor = new ScheduledThreadPoolExecutor(numThreads, Threads.newDaemonThreadFactory("hbasefsck"));
-    lockFileRetryCounterFactory = new RetryCounterFactory(
-      getConf().getInt("hbase.hbck.lockfile.attempts", DEFAULT_MAX_LOCK_FILE_ATTEMPTS),
-      getConf().getInt(
-        "hbase.hbck.lockfile.attempt.sleep.interval", DEFAULT_LOCK_FILE_ATTEMPT_SLEEP_INTERVAL),
-      getConf().getInt(
-        "hbase.hbck.lockfile.attempt.maxsleeptime", DEFAULT_LOCK_FILE_ATTEMPT_MAX_SLEEP_TIME));
+    return new ScheduledThreadPoolExecutor(numThreads, Threads.newDaemonThreadFactory("hbasefsck"));
   }
 
   /**
@@ -361,6 +363,15 @@ public class HBaseFsck extends Configured implements Closeable {
         "hbase.hbck.lockfile.attempt.sleep.interval", DEFAULT_LOCK_FILE_ATTEMPT_SLEEP_INTERVAL),
       getConf().getInt(
         "hbase.hbck.lockfile.attempt.maxsleeptime", DEFAULT_LOCK_FILE_ATTEMPT_MAX_SLEEP_TIME));
+    createZNodeRetryCounterFactory = new RetryCounterFactory(
+      getConf().getInt("hbase.hbck.createznode.attempts", DEFAULT_MAX_CREATE_ZNODE_ATTEMPTS),
+      getConf().getInt(
+        "hbase.hbck.createznode.attempt.sleep.interval",
+        DEFAULT_CREATE_ZNODE_ATTEMPT_SLEEP_INTERVAL),
+      getConf().getInt(
+        "hbase.hbck.createznode.attempt.maxsleeptime",
+        DEFAULT_CREATE_ZNODE_ATTEMPT_MAX_SLEEP_TIME));
+    zkw = createZooKeeperWatcher();
   }
 
   private class FileLockCallable implements Callable<FSDataOutputStream> {
@@ -506,6 +517,7 @@ public class HBaseFsck extends Configured implements Closeable {
       @Override
       public void run() {
         IOUtils.closeStream(HBaseFsck.this);
+        cleanupHbckZnode();
         unlockHbck();
       }
     });
@@ -686,33 +698,92 @@ public class HBaseFsck extends Configured implements Closeable {
   }
 
   /**
+   * This method maintains an ephemeral znode. If the creation fails we return false or throw
+   * exception
+   *
+   * @return true if creating znode succeeds; false otherwise
+   * @throws IOException if IO failure occurs
+   */
+  private boolean setMasterInMaintenanceMode() throws IOException {
+    RetryCounter retryCounter = createZNodeRetryCounterFactory.create();
+    hbckEphemeralNodePath = ZKUtil.joinZNode(
+      ZooKeeperWatcher.masterMaintZNode,
+      "hbck-" + Long.toString(EnvironmentEdgeManager.currentTime()));
+    do {
+      try {
+        hbckZodeCreated = ZKUtil.createEphemeralNodeAndWatch(zkw, hbckEphemeralNodePath, null);
+        if (hbckZodeCreated) {
+          break;
+        }
+      } catch (KeeperException e) {
+        if (retryCounter.getAttemptTimes() >= retryCounter.getMaxAttempts()) {
+           throw new IOException("Can't create znode " + hbckEphemeralNodePath, e);
+        }
+        // fall through and retry
+      }
+
+      LOG.warn("Fail to create znode " + hbckEphemeralNodePath + ", try=" +
+          (retryCounter.getAttemptTimes() + 1) + " of " + retryCounter.getMaxAttempts());
+
+      try {
+        retryCounter.sleepUntilNextRetry();
+      } catch (InterruptedException ie) {
+        throw (InterruptedIOException) new InterruptedIOException(
+              "Can't create znode " + hbckEphemeralNodePath).initCause(ie);
+      }
+    } while (retryCounter.shouldRetry());
+    return hbckZodeCreated;
+  }
+
+  private void cleanupHbckZnode() {
+    try {
+      if (zkw != null && hbckZodeCreated) {
+        ZKUtil.deleteNode(zkw, hbckEphemeralNodePath);
+        hbckZodeCreated = false;
+      }
+    } catch (KeeperException e) {
+      // Ignore
+      if (!e.code().equals(KeeperException.Code.NONODE)) {
+        LOG.warn("Delete HBCK znode " + hbckEphemeralNodePath + " failed ", e);
+      }
+    }
+  }
+
+  /**
    * Contacts the master and prints out cluster-wide information
    * @return 0 on success, non-zero on failure
    */
-  public int onlineHbck() throws IOException, KeeperException, InterruptedException, ServiceException {
+  public int onlineHbck()
+      throws IOException, KeeperException, InterruptedException, ServiceException {
     // print hbase server version
     errors.print("Version: " + status.getHBaseVersion());
     offlineHdfsIntegrityRepair();
 
-    // turn the balancer off
-    boolean oldBalancer = admin.setBalancerRunning(false, true);
-    try {
-      onlineConsistencyRepair();
+    // If Master runs maintenance tasks (such as balancer, catalog janitor, etc) during online
+    // hbck, it is likely that hbck would be misled and report transient errors.  Therefore, it
+    // is better to set Master into maintenance mode during online hbck.
+    //
+    if (!setMasterInMaintenanceMode()) {
+      LOG.warn("HBCK is running while master is not in maintenance mode, you might see transient "
+        + "error.  Please run HBCK multiple times to reduce the chance of transient error.");
     }
-    finally {
-      admin.setBalancerRunning(oldBalancer, false);
-    }
+
+    onlineConsistencyRepair();
 
     if (checkRegionBoundaries) {
       checkRegionBoundaries();
     }
 
     offlineReferenceFileRepair();
+    offlineHLinkFileRepair();
 
     checkAndFixTableLocks();
 
     // Check (and fix if requested) orphaned table ZNodes
     checkAndFixOrphanedTableZNodes();
+
+    // Remove the hbck znode
+    cleanupHbckZnode();
 
     // Remove the hbck lock
     unlockHbck();
@@ -733,7 +804,18 @@ public class HBaseFsck extends Configured implements Closeable {
 
   @Override
   public void close() throws IOException {
-    IOUtils.cleanup(null, admin, meta, connection);
+    try {
+      cleanupHbckZnode();
+      unlockHbck();
+    } catch (Exception io) {
+      LOG.warn(io);
+    } finally {
+      if (zkw != null) {
+        zkw.close();
+        zkw = null;
+      }
+      IOUtils.cleanup(null, admin, meta, connection);
+    }
   }
 
   private static class RegionBoundariesInformation {
@@ -927,7 +1009,8 @@ public class HBaseFsck extends Configured implements Closeable {
         Bytes.toString(orphanRegionRange.getSecond()) + ")");
 
     // create new region on hdfs.  move data into place.
-    HRegionInfo hri = new HRegionInfo(template.getTableName(), orphanRegionRange.getFirst(), orphanRegionRange.getSecond());
+    HRegionInfo hri = new HRegionInfo(template.getTableName(), orphanRegionRange.getFirst(),
+      Bytes.add(orphanRegionRange.getSecond(), new byte[1]));
     LOG.info("Creating new region : " + hri);
     HRegion region = HBaseFsckRepair.createHDFSRegionDir(getConf(), hri, template);
     Path target = region.getRegionFileSystem().getRegionDir();
@@ -993,26 +1076,16 @@ public class HBaseFsck extends Configured implements Closeable {
    * Lingering reference file prevents a region from opening. It has to
    * be fixed before a cluster can start properly.
    */
-  private void offlineReferenceFileRepair() throws IOException {
+  private void offlineReferenceFileRepair() throws IOException, InterruptedException {
     Configuration conf = getConf();
     Path hbaseRoot = FSUtils.getRootDir(conf);
     FileSystem fs = hbaseRoot.getFileSystem(conf);
     LOG.info("Computing mapping of all store files");
-    Map<String, Path> allFiles = FSUtils.getTableStoreFilePathMap(fs, hbaseRoot, errors);
+    Map<String, Path> allFiles = FSUtils.getTableStoreFilePathMap(fs, hbaseRoot,
+      new FSUtils.ReferenceFileFilter(fs), executor, errors);
     errors.print("");
     LOG.info("Validating mapping using HDFS state");
     for (Path path: allFiles.values()) {
-      boolean isReference = false;
-      try {
-        isReference = StoreFileInfo.isReference(path);
-      } catch (Throwable t) {
-        // Ignore. Some files may not be store files at all.
-        // For example, files under .oldlogs folder in hbase:meta
-        // Warning message is already logged by
-        // StoreFile#isReference.
-      }
-      if (!isReference) continue;
-
       Path referredToFile = StoreFileInfo.getReferredToFile(path);
       if (fs.exists(referredToFile)) continue;  // good, expected
 
@@ -1042,11 +1115,80 @@ public class HBaseFsck extends Configured implements Closeable {
         setShouldRerun();
 
         success = fs.rename(path, dst);
+        debugLsr(dst);
+
       }
       if (!success) {
         LOG.error("Failed to sideline reference file " + path);
       }
     }
+  }
+
+  /**
+   * Scan all the store file names to find any lingering HFileLink files,
+   * which refer to some none-exiting files. If "fix" option is enabled,
+   * any lingering HFileLink file will be sidelined if found.
+   */
+  private void offlineHLinkFileRepair() throws IOException, InterruptedException {
+    Configuration conf = getConf();
+    Path hbaseRoot = FSUtils.getRootDir(conf);
+    FileSystem fs = hbaseRoot.getFileSystem(conf);
+    LOG.info("Computing mapping of all link files");
+    Map<String, Path> allFiles = FSUtils
+        .getTableStoreFilePathMap(fs, hbaseRoot, new FSUtils.HFileLinkFilter(), executor, errors);
+    errors.print("");
+
+    LOG.info("Validating mapping using HDFS state");
+    for (Path path : allFiles.values()) {
+      // building HFileLink object to gather locations
+      HFileLink actualLink = HFileLink.buildFromHFileLinkPattern(conf, path);
+      if (actualLink.exists(fs)) continue; // good, expected
+
+      // Found a lingering HFileLink
+      errors.reportError(ERROR_CODE.LINGERING_HFILELINK, "Found lingering HFileLink " + path);
+      if (!shouldFixHFileLinks()) continue;
+
+      // Now, trying to fix it since requested
+      setShouldRerun();
+
+      // An HFileLink path should be like
+      // ${hbase.rootdir}/data/namespace/table_name/region_id/family_name/linkedtable=linkedregionname-linkedhfilename
+      // sidelineing will happen in the ${hbase.rootdir}/${sidelinedir} directory with the same folder structure.
+      boolean success = sidelineFile(fs, hbaseRoot, path);
+
+      if (!success) {
+        LOG.error("Failed to sideline HFileLink file " + path);
+      }
+
+      // An HFileLink backreference path should be like
+      // ${hbase.rootdir}/archive/data/namespace/table_name/region_id/family_name/.links-linkedhfilename
+      // sidelineing will happen in the ${hbase.rootdir}/${sidelinedir} directory with the same folder structure.
+      Path backRefPath = FileLink.getBackReferencesDir(HFileArchiveUtil
+              .getStoreArchivePath(conf, HFileLink.getReferencedTableName(path.getName().toString()),
+                  HFileLink.getReferencedRegionName(path.getName().toString()),
+                  path.getParent().getName()),
+          HFileLink.getReferencedHFileName(path.getName().toString()));
+      success = sidelineFile(fs, hbaseRoot, backRefPath);
+
+      if (!success) {
+        LOG.error("Failed to sideline HFileLink backreference file " + path);
+      }
+    }
+  }
+
+  private boolean sidelineFile(FileSystem fs, Path hbaseRoot, Path path) throws IOException {
+    URI uri = hbaseRoot.toUri().relativize(path.toUri());
+    if (uri.isAbsolute()) return false;
+    String relativePath = uri.getPath();
+    Path rootDir = getSidelineDir();
+    Path dst = new Path(rootDir, relativePath);
+    boolean pathCreated = fs.mkdirs(dst.getParent());
+    if (!pathCreated) {
+      LOG.error("Failed to create path: " + dst.getParent());
+      return false;
+    }
+    LOG.info("Trying to sideline file " + path + " to " + dst);
+    return fs.rename(path, dst);
   }
 
   /**
@@ -1093,7 +1235,10 @@ public class HBaseFsck extends Configured implements Closeable {
   private void loadHdfsRegioninfo(HbckInfo hbi) throws IOException {
     Path regionDir = hbi.getHdfsRegionDir();
     if (regionDir == null) {
-      LOG.warn("No HDFS region dir found: " + hbi + " meta=" + hbi.metaEntry);
+      if (hbi.getReplicaId() == HRegionInfo.DEFAULT_REPLICA_ID) {
+        // Log warning only for default/ primary replica with no region dir
+        LOG.warn("No HDFS region dir found: " + hbi + " meta=" + hbi.metaEntry);
+      }
       return;
     }
 
@@ -1627,7 +1772,6 @@ public class HBaseFsck extends Configured implements Closeable {
     HConnectionManager.execute(new HConnectable<Void>(getConf()) {
       @Override
       public Void connect(HConnection connection) throws IOException {
-        ZooKeeperWatcher zkw = createZooKeeperWatcher();
         try {
           for (TableName tableName :
               ZKTableStateClientSideReader.getDisabledOrDisablingTables(zkw)) {
@@ -1637,8 +1781,6 @@ public class HBaseFsck extends Configured implements Closeable {
           throw new IOException(ke);
         } catch (InterruptedException e) {
           throw new InterruptedIOException();
-        } finally {
-          zkw.close();
         }
         return null;
       }
@@ -1690,23 +1832,22 @@ public class HBaseFsck extends Configured implements Closeable {
       }
     }
 
-    // level 1:  <HBASE_DIR>/*
-    List<WorkItemHdfsDir> dirs = new ArrayList<WorkItemHdfsDir>(tableDirs.size());
-    List<Future<Void>> dirsFutures;
-
+    // Avoid multithreading at table-level because already multithreaded internally at
+    // region-level.  Additionally multithreading at table-level can lead to deadlock
+    // if there are many tables in the cluster.  Since there are a limited # of threads
+    // in the executor's thread pool and if we multithread at the table-level by putting
+    // WorkItemHdfsDir callables into the executor, then we will have some threads in the
+    // executor tied up solely in waiting for the tables' region-level calls to complete.
+    // If there are enough tables then there will be no actual threads in the pool left
+    // for the region-level callables to be serviced.
     for (FileStatus tableDir : tableDirs) {
       LOG.debug("Loading region dirs from " +tableDir.getPath());
-      dirs.add(new WorkItemHdfsDir(this, fs, errors, tableDir));
-    }
-
-    // Invoke and wait for Callables to complete
-    dirsFutures = executor.invokeAll(dirs);
-
-    for(Future<Void> f: dirsFutures) {
+      WorkItemHdfsDir item = new WorkItemHdfsDir(fs, errors, tableDir);
       try {
-        f.get();
-      } catch(ExecutionException e) {
-        LOG.warn("Could not load region dir " , e.getCause());
+        item.call();
+      } catch (ExecutionException e) {
+        LOG.warn("Could not completely load table dir " +
+            tableDir.getPath(), e.getCause());
       }
     }
     errors.print("");
@@ -1759,17 +1900,6 @@ public class HBaseFsck extends Configured implements Closeable {
     });
   }
 
-  private ServerName getMetaRegionServerName(int replicaId)
-  throws IOException, KeeperException {
-    ZooKeeperWatcher zkw = createZooKeeperWatcher();
-    ServerName sn = null;
-    try {
-      sn = new MetaTableLocator().getMetaRegionLocation(zkw, replicaId);
-    } finally {
-      zkw.close();
-    }
-    return sn;
-  }
 
   /**
    * Contacts each regionserver and fetches metadata about regions.
@@ -2282,7 +2412,8 @@ public class HBaseFsck extends Configured implements Closeable {
       }
       errors.reportError(ERROR_CODE.LINGERING_SPLIT_PARENT, "Region "
           + descriptiveName + " is a split parent in META, in HDFS, "
-          + "and not deployed on any region server. This could be transient.");
+          + "and not deployed on any region server. This could be transient, "
+          + "consider to run the catalog janitor first!");
       if (shouldFixSplitParents()) {
         setShouldRerun();
         resetSplitParent(hbi);
@@ -2680,6 +2811,18 @@ public class HBaseFsck extends Configured implements Closeable {
       }
 
       @Override
+      public void handleSplit(HbckInfo r1, HbckInfo r2) throws IOException{
+        byte[] key = r1.getStartKey();
+        // dup start key
+        errors.reportError(ERROR_CODE.DUPE_ENDKEYS,
+          "Multiple regions have the same regionID: "
+            + Bytes.toStringBinary(key), getTableInfo(), r1);
+        errors.reportError(ERROR_CODE.DUPE_ENDKEYS,
+          "Multiple regions have the same regionID: "
+            + Bytes.toStringBinary(key), getTableInfo(), r2);
+      }
+
+      @Override
       public void handleOverlapInRegionChain(HbckInfo hi1, HbckInfo hi2) throws IOException{
         errors.reportError(ERROR_CODE.OVERLAP_IN_REGION_CHAIN,
             "There is an overlap in the region chain.",
@@ -2813,8 +2956,122 @@ public class HBaseFsck extends Configured implements Closeable {
           }
           return;
         }
-
+        if (shouldRemoveParents()) {
+          removeParentsAndFixSplits(overlap);
+        }
         mergeOverlaps(overlap);
+      }
+
+      void removeParentsAndFixSplits(Collection<HbckInfo> overlap) throws IOException {
+        Pair<byte[], byte[]> range = null;
+        HbckInfo parent = null;
+        HbckInfo daughterA = null;
+        HbckInfo daughterB = null;
+        Collection<HbckInfo> daughters = new ArrayList<HbckInfo>(overlap);
+
+        String thread = Thread.currentThread().getName();
+        LOG.info("== [" + thread + "] Attempting fix splits in overlap state.");
+
+        // we only can handle a single split per group at the time
+        if (overlap.size() > 3) {
+          LOG.info("Too many overlaps were found on this group, falling back to regular merge.");
+          return;
+        }
+
+        for (HbckInfo hi : overlap) {
+          if (range == null) {
+            range = new Pair<byte[], byte[]>(hi.getStartKey(), hi.getEndKey());
+          } else {
+            if (RegionSplitCalculator.BYTES_COMPARATOR
+              .compare(hi.getStartKey(), range.getFirst()) < 0) {
+              range.setFirst(hi.getStartKey());
+            }
+            if (RegionSplitCalculator.BYTES_COMPARATOR
+              .compare(hi.getEndKey(), range.getSecond()) > 0) {
+              range.setSecond(hi.getEndKey());
+            }
+          }
+        }
+
+        LOG.info("This group range is [" + Bytes.toStringBinary(range.getFirst()) + ", "
+          + Bytes.toStringBinary(range.getSecond()) + "]");
+
+        // attempt to find a possible parent for the edge case of a split
+        for (HbckInfo hi : overlap) {
+          if (Bytes.compareTo(hi.getHdfsHRI().getStartKey(), range.getFirst()) == 0
+            && Bytes.compareTo(hi.getHdfsHRI().getEndKey(), range.getSecond()) == 0) {
+            LOG.info("This is a parent for this group: " + hi.toString());
+            parent = hi;
+          }
+        }
+
+        // Remove parent regions from daughters collection
+        if (parent != null) {
+          daughters.remove(parent);
+        }
+
+        // Lets verify that daughters share the regionID at split time and they
+        // were created after the parent
+        for (HbckInfo hi : daughters) {
+          if (Bytes.compareTo(hi.getHdfsHRI().getStartKey(), range.getFirst()) == 0) {
+            if (parent.getHdfsHRI().getRegionId() < hi.getHdfsHRI().getRegionId()) {
+              daughterA = hi;
+            }
+          }
+          if (Bytes.compareTo(hi.getHdfsHRI().getEndKey(), range.getSecond()) == 0) {
+            if (parent.getHdfsHRI().getRegionId() < hi.getHdfsHRI().getRegionId()) {
+              daughterB = hi;
+            }
+          }
+        }
+
+        // daughters must share the same regionID and we should have a parent too
+        if (daughterA.getHdfsHRI().getRegionId() != daughterB.getHdfsHRI().getRegionId() || parent == null)
+          return;
+
+        FileSystem fs = FileSystem.get(conf);
+        LOG.info("Found parent: " + parent.getRegionNameAsString());
+        LOG.info("Found potential daughter a: " + daughterA.getRegionNameAsString());
+        LOG.info("Found potential daughter b: " + daughterB.getRegionNameAsString());
+        LOG.info("Trying to fix parent in overlap by removing the parent.");
+        try {
+          closeRegion(parent);
+        } catch (IOException ioe) {
+          LOG.warn("Parent region could not be closed, continuing with regular merge...", ioe);
+          return;
+        } catch (InterruptedException ie) {
+          LOG.warn("Parent region could not be closed, continuing with regular merge...", ie);
+          return;
+        }
+
+        try {
+          offline(parent.getRegionName());
+        } catch (IOException ioe) {
+          LOG.warn("Unable to offline parent region: " + parent.getRegionNameAsString()
+            + ".  Just continuing with regular merge... ", ioe);
+          return;
+        }
+
+        try {
+          HBaseFsckRepair.removeParentInMeta(conf, parent.getHdfsHRI());
+        } catch (IOException ioe) {
+          LOG.warn("Unable to remove parent region in META: " + parent.getRegionNameAsString()
+            + ".  Just continuing with regular merge... ", ioe);
+          return;
+        }
+
+        sidelineRegionDir(fs, parent);
+        LOG.info("[" + thread + "] Sidelined parent region dir "+ parent.getHdfsRegionDir() + " into " +
+          getSidelineDir());
+        debugLsr(parent.getHdfsRegionDir());
+
+        // Make sure we don't have the parents and daughters around
+        overlap.remove(parent);
+        overlap.remove(daughterA);
+        overlap.remove(daughterB);
+
+        LOG.info("Done fixing split.");
+
       }
 
       void mergeOverlaps(Collection<HbckInfo> overlap)
@@ -3002,8 +3259,13 @@ public class HBaseFsck extends Configured implements Closeable {
             subRange.remove(r1);
             for (HbckInfo r2 : subRange) {
               if (r2.getReplicaId() != HRegionInfo.DEFAULT_REPLICA_ID) continue;
+              // general case of same start key
               if (Bytes.compareTo(r1.getStartKey(), r2.getStartKey())==0) {
                 handler.handleDuplicateStartKeys(r1,r2);
+              } else if (Bytes.compareTo(r1.getEndKey(), r2.getStartKey())==0 &&
+                r1.getHdfsHRI().getRegionId() == r2.getHdfsHRI().getRegionId()) {
+                LOG.info("this is a split, log to splits");
+                handler.handleSplit(r1, r2);
               } else {
                 // overlap
                 handler.handleOverlapInRegionChain(r1, r2);
@@ -3214,17 +3476,11 @@ public class HBaseFsck extends Configured implements Closeable {
   }
 
   private void checkAndFixTableLocks() throws IOException {
-    ZooKeeperWatcher zkw = createZooKeeperWatcher();
+    TableLockChecker checker = new TableLockChecker(zkw, errors);
+    checker.checkTableLocks();
 
-    try {
-      TableLockChecker checker = new TableLockChecker(zkw, errors);
-      checker.checkTableLocks();
-
-      if (this.fixTableLocks) {
-        checker.fixExpiredTableLocks();
-      }
-    } finally {
-      zkw.close();
+    if (this.fixTableLocks) {
+      checker.fixExpiredTableLocks();
     }
   }
 
@@ -3236,47 +3492,41 @@ public class HBaseFsck extends Configured implements Closeable {
    */
   private void checkAndFixOrphanedTableZNodes()
       throws IOException, KeeperException, InterruptedException {
-    ZooKeeperWatcher zkw = createZooKeeperWatcher();
+    Set<TableName> enablingTables = ZKTableStateClientSideReader.getEnablingTables(zkw);
+    String msg;
+    TableInfo tableInfo;
 
-    try {
-      Set<TableName> enablingTables = ZKTableStateClientSideReader.getEnablingTables(zkw);
-      String msg;
-      TableInfo tableInfo;
-
-      for (TableName tableName : enablingTables) {
-        // Check whether the table exists in hbase
-        tableInfo = tablesInfo.get(tableName);
-        if (tableInfo != null) {
-          // Table exists.  This table state is in transit.  No problem for this table.
-          continue;
-        }
-
-        msg = "Table " + tableName + " not found in hbase:meta. Orphaned table ZNode found.";
-        LOG.warn(msg);
-        orphanedTableZNodes.add(tableName);
-        errors.reportError(ERROR_CODE.ORPHANED_ZK_TABLE_ENTRY, msg);
+    for (TableName tableName : enablingTables) {
+      // Check whether the table exists in hbase
+      tableInfo = tablesInfo.get(tableName);
+      if (tableInfo != null) {
+        // Table exists.  This table state is in transit.  No problem for this table.
+        continue;
       }
 
-      if (orphanedTableZNodes.size() > 0 && this.fixTableZNodes) {
-        ZKTableStateManager zkTableStateMgr = new ZKTableStateManager(zkw);
+      msg = "Table " + tableName + " not found in hbase:meta. Orphaned table ZNode found.";
+      LOG.warn(msg);
+      orphanedTableZNodes.add(tableName);
+      errors.reportError(ERROR_CODE.ORPHANED_ZK_TABLE_ENTRY, msg);
+    }
 
-        for (TableName tableName : orphanedTableZNodes) {
-          try {
-            // Set the table state to be disabled so that if we made mistake, we can trace
-            // the history and figure it out.
-            // Another choice is to call checkAndRemoveTableState() to delete the orphaned ZNode.
-            // Both approaches works.
-            zkTableStateMgr.setTableState(tableName, ZooKeeperProtos.Table.State.DISABLED);
-          } catch (CoordinatedStateException e) {
-            // This exception should not happen here
-            LOG.error(
-              "Got a CoordinatedStateException while fixing the ENABLING table znode " + tableName,
-              e);
-          }
+    if (orphanedTableZNodes.size() > 0 && this.fixTableZNodes) {
+      ZKTableStateManager zkTableStateMgr = new ZKTableStateManager(zkw);
+
+      for (TableName tableName : orphanedTableZNodes) {
+        try {
+          // Set the table state to be disabled so that if we made mistake, we can trace
+          // the history and figure it out.
+          // Another choice is to call checkAndRemoveTableState() to delete the orphaned ZNode.
+          // Both approaches works.
+          zkTableStateMgr.setTableState(tableName, ZooKeeperProtos.Table.State.DISABLED);
+        } catch (CoordinatedStateException e) {
+          // This exception should not happen here
+          LOG.error(
+            "Got a CoordinatedStateException while fixing the ENABLING table znode " + tableName,
+            e);
         }
       }
-    } finally {
-      zkw.close();
     }
   }
 
@@ -3346,12 +3596,7 @@ public class HBaseFsck extends Configured implements Closeable {
   private void unassignMetaReplica(HbckInfo hi) throws IOException, InterruptedException,
   KeeperException {
     undeployRegions(hi);
-    ZooKeeperWatcher zkw = createZooKeeperWatcher();
-    try {
-      ZKUtil.deleteNode(zkw, zkw.getZNodeForReplica(hi.metaEntry.getReplicaId()));
-    } finally {
-      zkw.close();
-    }
+    ZKUtil.deleteNode(zkw, zkw.getZNodeForReplica(hi.metaEntry.getReplicaId()));
   }
 
   private void assignMetaReplica(int replicaId)
@@ -3814,7 +4059,8 @@ public class HBaseFsck extends Configured implements Closeable {
       FIRST_REGION_STARTKEY_NOT_EMPTY, LAST_REGION_ENDKEY_NOT_EMPTY, DUPE_STARTKEYS,
       HOLE_IN_REGION_CHAIN, OVERLAP_IN_REGION_CHAIN, REGION_CYCLE, DEGENERATE_REGION,
       ORPHAN_HDFS_REGION, LINGERING_SPLIT_PARENT, NO_TABLEINFO_FILE, LINGERING_REFERENCE_HFILE,
-      WRONG_USAGE, EMPTY_META_CELL, EXPIRED_TABLE_LOCK, ORPHANED_ZK_TABLE_ENTRY, BOUNDARIES_ERROR
+      LINGERING_HFILELINK, WRONG_USAGE, EMPTY_META_CELL, EXPIRED_TABLE_LOCK,
+      ORPHANED_ZK_TABLE_ENTRY, BOUNDARIES_ERROR,DUPE_ENDKEYS
     }
     void clear();
     void report(String message);
@@ -4034,70 +4280,115 @@ public class HBaseFsck extends Configured implements Closeable {
    * Contact hdfs and get all information about specified table directory into
    * regioninfo list.
    */
-  static class WorkItemHdfsDir implements Callable<Void> {
-    private HBaseFsck hbck;
+  class WorkItemHdfsDir implements Callable<Void> {
     private FileStatus tableDir;
     private ErrorReporter errors;
     private FileSystem fs;
 
-    WorkItemHdfsDir(HBaseFsck hbck, FileSystem fs, ErrorReporter errors,
+    WorkItemHdfsDir(FileSystem fs, ErrorReporter errors,
                     FileStatus status) {
-      this.hbck = hbck;
       this.fs = fs;
       this.tableDir = status;
       this.errors = errors;
     }
 
     @Override
-    public synchronized Void call() throws IOException {
+    public synchronized Void call() throws InterruptedException, ExecutionException {
+      final Vector<Exception> exceptions = new Vector<Exception>();
       try {
         // level 2: <HBASE_DIR>/<table>/*
-        FileStatus[] regionDirs = fs.listStatus(tableDir.getPath());
-        for (FileStatus regionDir : regionDirs) {
+        final FileStatus[] regionDirs = fs.listStatus(tableDir.getPath());
+        final List<Future<?>> futures = new ArrayList<Future<?>>(regionDirs.length);
+        for (final FileStatus regionDir : regionDirs) {
           errors.progress();
-          String encodedName = regionDir.getPath().getName();
+          final String encodedName = regionDir.getPath().getName();
           // ignore directories that aren't hexadecimal
           if (!encodedName.toLowerCase().matches("[0-9a-f]+")) {
             continue;
           }
 
-          LOG.debug("Loading region info from hdfs:"+ regionDir.getPath());
-          HbckInfo hbi = hbck.getOrCreateInfo(encodedName);
-          HdfsEntry he = new HdfsEntry();
-          synchronized (hbi) {
-            if (hbi.getHdfsRegionDir() != null) {
-              errors.print("Directory " + encodedName + " duplicate??" +
-                           hbi.getHdfsRegionDir());
-            }
+          if (!exceptions.isEmpty()) {
+            break;
+          }
 
-            he.hdfsRegionDir = regionDir.getPath();
-            he.hdfsRegionDirModTime = regionDir.getModificationTime();
-            Path regioninfoFile = new Path(he.hdfsRegionDir, HRegionFileSystem.REGION_INFO_FILE);
-            he.hdfsRegioninfoFilePresent = fs.exists(regioninfoFile);
-            // we add to orphan list when we attempt to read .regioninfo
+          futures.add(executor.submit(new Runnable() {
+            @Override
+            public void run() {
+              try {
+                LOG.debug("Loading region info from hdfs:"+ regionDir.getPath());
+                Path regioninfoFile = new Path(regionDir.getPath(),
+                    HRegionFileSystem.REGION_INFO_FILE);
+                boolean regioninfoFileExists = fs.exists(regioninfoFile);
 
-            // Set a flag if this region contains only edits
-            // This is special case if a region is left after split
-            he.hdfsOnlyEdits = true;
-            FileStatus[] subDirs = fs.listStatus(regionDir.getPath());
-            Path ePath = WALSplitter.getRegionDirRecoveredEditsDir(regionDir.getPath());
-            for (FileStatus subDir : subDirs) {
-              errors.progress();
-              String sdName = subDir.getPath().getName();
-              if (!sdName.startsWith(".") && !sdName.equals(ePath.getName())) {
-                he.hdfsOnlyEdits = false;
-                break;
+                if (!regioninfoFileExists) {
+                  // As tables become larger it is more and more likely that by the time you
+                  // reach a given region that it will be gone due to region splits/merges.
+                  if (!fs.exists(regionDir.getPath())) {
+                    LOG.warn("By the time we tried to process this region dir it was already gone: "
+                        + regionDir.getPath());
+                    return;
+                  }
+                }
+                HbckInfo hbi = HBaseFsck.this.getOrCreateInfo(encodedName);
+                HdfsEntry he = new HdfsEntry();
+                synchronized (hbi) {
+                  if (hbi.getHdfsRegionDir() != null) {
+                    errors.print("Directory " + encodedName + " duplicate??" +
+                        hbi.getHdfsRegionDir());
+                  }
+
+                  he.hdfsRegionDir = regionDir.getPath();
+                  he.hdfsRegionDirModTime = regionDir.getModificationTime();
+                  he.hdfsRegioninfoFilePresent = regioninfoFileExists;
+                  // we add to orphan list when we attempt to read .regioninfo
+
+                  // Set a flag if this region contains only edits
+                  // This is special case if a region is left after split
+                  he.hdfsOnlyEdits = true;
+                  FileStatus[] subDirs = fs.listStatus(regionDir.getPath());
+                  Path ePath = WALSplitter.getRegionDirRecoveredEditsDir(regionDir.getPath());
+                  for (FileStatus subDir : subDirs) {
+                    errors.progress();
+                    String sdName = subDir.getPath().getName();
+                    if (!sdName.startsWith(".") && !sdName.equals(ePath.getName())) {
+                      he.hdfsOnlyEdits = false;
+                      break;
+                    }
+                  }
+                  hbi.hdfsEntry = he;
+                }
+              } catch (Exception e) {
+                LOG.error("Could not load region dir", e);
+                exceptions.add(e);
               }
             }
-            hbi.hdfsEntry = he;
+          }));
+        }
+        // Ensure all pending tasks are complete (or that we run into an exception)
+        for (Future<?> f : futures) {
+          if (!exceptions.isEmpty()) {
+            break;
           }
+          try {
+            f.get();
+          } catch (ExecutionException e) {
+            LOG.error("Unexpected exec exception!  Should've been caught already.  (Bug?)", e);
+            // Shouldn't happen, we already logged/caught any exceptions in the Runnable
+          };
         }
       } catch (IOException e) {
-        // unable to connect to the region server.
-        errors.reportError(ERROR_CODE.RS_CONNECT_FAILURE, "Table Directory: "
-            + tableDir.getPath().getName()
-            + " Unable to fetch region information. " + e);
-        throw e;
+        LOG.error("Cannot execute WorkItemHdfsDir for " + tableDir, e);
+        exceptions.add(e);
+      } finally {
+        if (!exceptions.isEmpty()) {
+          errors.reportError(ERROR_CODE.RS_CONNECT_FAILURE, "Table Directory: "
+              + tableDir.getPath().getName()
+              + " Unable to fetch all HDFS region information. ");
+          // Just throw the first exception as an indication something bad happened
+          // Don't need to propagate all the exceptions, we already logged them all anyway
+          throw new ExecutionException("First exception in WorkItemHdfsDir",
+              exceptions.firstElement());
+        }
       }
       return null;
     }
@@ -4306,8 +4597,17 @@ public class HBaseFsck extends Configured implements Closeable {
     fixAny |= shouldFix;
   }
 
+  public void setRemoveParents(boolean shouldFix) {
+    removeParents = shouldFix;
+    fixAny |= shouldFix;
+  }
+
   boolean shouldFixSplitParents() {
     return fixSplitParents;
+  }
+
+  boolean shouldRemoveParents() {
+    return removeParents;
   }
 
   public void setFixReferenceFiles(boolean shouldFix) {
@@ -4317,6 +4617,15 @@ public class HBaseFsck extends Configured implements Closeable {
 
   boolean shouldFixReferenceFiles() {
     return fixReferenceFiles;
+  }
+
+  public void setFixHFileLinks(boolean shouldFix) {
+    fixHFileLinks = shouldFix;
+    fixAny |= shouldFix;
+  }
+
+  boolean shouldFixHFileLinks() {
+    return fixHFileLinks;
   }
 
   public boolean shouldIgnorePreCheckPermission() {
@@ -4415,7 +4724,6 @@ public class HBaseFsck extends Configured implements Closeable {
     out.println("   -metaonly Only check the state of the hbase:meta table.");
     out.println("   -sidelineDir <hdfs://> HDFS path to backup existing meta.");
     out.println("   -boundaries Verify that regions boundaries are the same between META and store files.");
-
     out.println("");
     out.println("  Metadata Repair options: (expert features, use with caution!)");
     out.println("   -fix              Try to fix region assignments.  This is for backwards compatiblity");
@@ -4432,8 +4740,10 @@ public class HBaseFsck extends Configured implements Closeable {
     out.println("   -sidelineBigOverlaps  When fixing region overlaps, allow to sideline big overlaps");
     out.println("   -maxOverlapsToSideline <n>  When fixing region overlaps, allow at most <n> regions to sideline per group. (n=" + DEFAULT_OVERLAPS_TO_SIDELINE +" by default)");
     out.println("   -fixSplitParents  Try to force offline split parents to be online.");
+    out.println("   -removeParents    Try to offline and sideline lingering parents and keep daughter regions.");
     out.println("   -ignorePreCheckPermission  ignore filesystem permission pre-check");
     out.println("   -fixReferenceFiles  Try to offline lingering reference store files");
+    out.println("   -fixHFileLinks  Try to offline lingering HFileLinks");
     out.println("   -fixEmptyMetaCells  Try to fix hbase:meta entries not referencing any region"
         + " (empty REGIONINFO_QUALIFIER rows)");
 
@@ -4446,7 +4756,8 @@ public class HBaseFsck extends Configured implements Closeable {
     out.println("  Metadata Repair shortcuts");
     out.println("   -repair           Shortcut for -fixAssignments -fixMeta -fixHdfsHoles " +
         "-fixHdfsOrphans -fixHdfsOverlaps -fixVersionFile -sidelineBigOverlaps " +
-        "-fixReferenceFiles -fixTableLocks -fixOrphanedTableZnodes");
+        "-fixReferenceFiles -fixHFileLinks -fixTableLocks -fixOrphanedTableZnodes");
+
     out.println("   -repairHoles      Shortcut for -fixAssignments -fixMeta -fixHdfsHoles");
 
     out.println("");
@@ -4566,6 +4877,8 @@ public class HBaseFsck extends Configured implements Closeable {
         setSidelineBigOverlaps(true);
       } else if (cmd.equals("-fixSplitParents")) {
         setFixSplitParents(true);
+      } else if (cmd.equals("-removeParents")) {
+        setRemoveParents(true);
       } else if (cmd.equals("-ignorePreCheckPermission")) {
         setIgnorePreCheckPermission(true);
       } else if (cmd.equals("-checkCorruptHFiles")) {
@@ -4574,6 +4887,8 @@ public class HBaseFsck extends Configured implements Closeable {
         sidelineCorruptHFiles = true;
       } else if (cmd.equals("-fixReferenceFiles")) {
         setFixReferenceFiles(true);
+      } else if (cmd.equals("-fixHFileLinks")) {
+        setFixHFileLinks(true);
       } else if (cmd.equals("-fixEmptyMetaCells")) {
         setFixEmptyMetaCells(true);
       } else if (cmd.equals("-repair")) {
@@ -4589,6 +4904,7 @@ public class HBaseFsck extends Configured implements Closeable {
         setFixSplitParents(false);
         setCheckHdfs(true);
         setFixReferenceFiles(true);
+        setFixHFileLinks(true);
         setFixTableLocks(true);
         setFixTableZNodes(true);
       } else if (cmd.equals("-repairHoles")) {

@@ -22,6 +22,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Future;
 import java.util.regex.Pattern;
 
 import org.apache.hadoop.conf.Configuration;
@@ -31,10 +32,13 @@ import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
+import org.apache.hadoop.hbase.ProcedureInfo;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableExistsException;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotFoundException;
+import org.apache.hadoop.hbase.backup.BackupRequest;
+import org.apache.hadoop.hbase.backup.BackupType;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel;
@@ -702,11 +706,43 @@ public interface Admin extends Abortable, Closeable {
   boolean balancer() throws IOException;
 
   /**
+   * Invoke the balancer.  Will run the balancer and if regions to move, it will
+   * go ahead and do the reassignments. If there is region in transition, force parameter of true
+   * would still run balancer. Can *not* run for other reasons.  Check
+   * logs.
+   * @param force whether we should force balance even if there is region in transition
+   * @return True if balancer ran, false otherwise.
+   */
+  boolean balancer(boolean force) throws IOException;
+  
+  /**
    * Query the current state of the balancer
    *
    * @return true if the balancer is enabled, false otherwise.
    */
   boolean isBalancerEnabled() throws IOException;
+
+  /**
+   * Invoke region normalizer. Can NOT run for various reasons.  Check logs.
+   *
+   * @return True if region normalizer ran, false otherwise.
+   */
+  boolean normalize() throws IOException;
+
+  /**
+   * Query the current state of the region normalizer
+   *
+   * @return true if region normalizer is enabled, false otherwise.
+   */
+  boolean isNormalizerEnabled() throws IOException;
+
+  /**
+   * Turn region normalizer on or off.
+   *
+   * @return Previous normalizer value
+   */
+  boolean setNormalizerRunning(final boolean on)
+    throws IOException;
 
   /**
    * Enable/Disable the catalog janitor
@@ -777,6 +813,7 @@ public interface Admin extends Abortable, Closeable {
   void splitRegion(final byte[] regionName, final byte[] splitPoint)
     throws IOException;
 
+
   /**
    * Modify an existing table, more IRB friendly version. Asynchronous operation.  This means that
    * it may be a while before your schema change is updated across all of the table.
@@ -802,6 +839,13 @@ public interface Admin extends Abortable, Closeable {
    * @see #shutdown()
    */
   void stopMaster() throws IOException;
+
+  /**
+   * Check whether Master is in maintenance mode
+   *
+   * @throws IOException if a remote or network exception occurs
+   */
+  boolean isMasterInMaintenanceMode()  throws IOException;
 
   /**
    * Stop the designated regionserver
@@ -920,6 +964,40 @@ public interface Admin extends Abortable, Closeable {
    */
   HTableDescriptor[] getTableDescriptors(List<String> names)
     throws IOException;
+
+  /**
+   * abort a procedure
+   * @param procId ID of the procedure to abort
+   * @param mayInterruptIfRunning if the proc completed at least one step, should it be aborted?
+   * @return true if aborted, false if procedure already completed or does not exist
+   * @throws IOException
+   */
+  boolean abortProcedure(
+      final long procId,
+      final boolean mayInterruptIfRunning) throws IOException;
+
+  /**
+   * List procedures
+   * @return procedure list
+   * @throws IOException
+   */
+  ProcedureInfo[] listProcedures() throws IOException;
+
+  /**
+   * Abort a procedure but does not block and wait for it be completely removed.
+   * You can use Future.get(long, TimeUnit) to wait on the operation to complete.
+   * It may throw ExecutionException if there was an error while executing the operation
+   * or TimeoutException in case the wait timeout was not long enough to allow the
+   * operation to complete.
+   *
+   * @param procId ID of the procedure to abort
+   * @param mayInterruptIfRunning if the proc completed at least one step, should it be aborted?
+   * @return true if aborted, false if procedure already completed or does not exist
+   * @throws IOException
+   */
+  Future<Boolean> abortProcedureAsync(
+    final long procId,
+    final boolean mayInterruptIfRunning) throws IOException;
 
   /**
    * Roll the log writer. I.e. for filesystem based write ahead logs, start writing to a new file.
@@ -1366,4 +1444,110 @@ public interface Admin extends Abortable, Closeable {
    * @throws IOException
    */
   public int getMasterInfoPort() throws IOException;
+
+  /**
+   * Compact a table. Asynchronous operation.
+   *
+   * @param tableName table to compact
+   * @param compactType {@link org.apache.hadoop.hbase.client.Admin.CompactType}
+   * @throws IOException
+   * @throws InterruptedException
+   */
+  void compact(final TableName tableName, CompactType compactType)
+      throws IOException, InterruptedException;
+
+  /**
+   * Compact a column family within a table. Asynchronous operation.
+   *
+   * @param tableName table to compact
+   * @param columnFamily column family within a table
+   * @param compactType {@link org.apache.hadoop.hbase.client.Admin.CompactType}
+   * @throws IOException if not a mob column family or if a remote or network exception occurs
+   * @throws InterruptedException
+   */
+  void compact(final TableName tableName, final byte[] columnFamily, CompactType compactType)
+      throws IOException, InterruptedException;
+
+  /**
+   * Major compact a table. Asynchronous operation.
+   *
+   * @param tableName table to compact
+   * @param compactType {@link org.apache.hadoop.hbase.client.Admin.CompactType}
+   * @throws IOException
+   * @throws InterruptedException
+   */
+  void majorCompact(final TableName tableName, CompactType compactType) throws IOException,
+  InterruptedException;
+
+  /**
+   * Major compact a column family within a table. Asynchronous operation.
+   *
+   * @param tableName table to compact
+   * @param columnFamily column family within a table
+   * @param compactType {@link org.apache.hadoop.hbase.client.Admin.CompactType}
+   * @throws IOException if not a mob column family or if a remote or network exception occurs
+   * @throws InterruptedException
+   */
+  void majorCompact(final TableName tableName, final byte[] columnFamily, CompactType compactType)
+      throws IOException, InterruptedException;
+
+  /**
+   * Get the current compaction state of a table. It could be in a compaction, or none.
+   *
+   * @param tableName table to examine
+   * @param compactType {@link org.apache.hadoop.hbase.client.Admin.CompactType}
+   * @return the current compaction state
+   * @throws IOException if a remote or network exception occurs
+   */
+  AdminProtos.GetRegionInfoResponse.CompactionState getCompactionState(final TableName tableName,
+      CompactType compactType) throws IOException;
+
+  /**
+   * Get Backup Admin interface 
+   * @return backup admin object
+   * @throws IOException exception
+   */
+  BackupAdmin getBackupAdmin() throws IOException;
+  
+  /**
+   * Currently, there are only two compact types:
+   * {@code NORMAL} means do store files compaction;
+   * {@code MOB} means do mob files compaction.
+   * */
+
+  @InterfaceAudience.Public
+  @InterfaceStability.Unstable
+  public enum CompactType {
+
+    NORMAL    (0),
+    MOB       (1);
+
+    CompactType(int value) {}
+  }
+
+  /**
+   * Turn the Split or Merge switches on or off.
+   *
+   * @param enabled enabled or not
+   * @param synchronous If true, it waits until current split() call, if outstanding, to return.
+   * @param switchTypes switchType list {@link MasterSwitchType}
+   * @return Previous switch value array
+   */
+  boolean[] setSplitOrMergeEnabled(final boolean enabled, final boolean synchronous,
+                                   final MasterSwitchType... switchTypes) throws IOException;
+
+  /**
+   * Query the current state of the switch
+   *
+   * @return true if the switch is enabled, false otherwise.
+   */
+  boolean isSplitOrMergeEnabled(final MasterSwitchType switchType) throws IOException;
+
+  @InterfaceAudience.Public
+  @InterfaceStability.Evolving
+  public enum MasterSwitchType {
+    SPLIT,
+    MERGE
+  }
+  
 }

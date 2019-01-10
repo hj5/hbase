@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.hbase.regionserver;
 
+
 /**
  * Interface of a factory to create Metrics Sources used inside of regionservers.
  */
@@ -38,4 +39,30 @@ public interface MetricsRegionServerSourceFactory {
    * @return A metrics region source
    */
   MetricsRegionSource createRegion(MetricsRegionWrapper wrapper);
+
+  /**
+   * Create a MetricsUserSource from a user
+   * @return A metrics user source
+   */
+  MetricsUserSource createUser(String shortUserName);
+
+  /**
+   * Return the singleton instance for MetricsUserAggregateSource
+   * @return A metrics user aggregate source
+   */
+  MetricsUserAggregateSource getUserAggregate();
+
+  /**
+   * Create a MetricsTableSource from a MetricsTableWrapper.
+   * @param table The table name
+   * @param wrapper The wrapped table aggregate
+   * @return A metrics table source
+   */
+  MetricsTableSource createTable(String table, MetricsTableWrapperAggregate wrapper);
+
+  /**
+   * Get a MetricsTableAggregateSource
+   * @return A metrics table aggregate source
+   */
+  MetricsTableAggregateSource getTableAggregate();
 }

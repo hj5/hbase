@@ -18,52 +18,6 @@
 
 package org.apache.hadoop.hbase.security.access;
 
-import com.google.protobuf.RpcCallback;
-import com.google.protobuf.RpcController;
-import com.google.protobuf.Service;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.FileUtil;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.permission.FsPermission;
-import org.apache.hadoop.hbase.Coprocessor;
-import org.apache.hadoop.hbase.CoprocessorEnvironment;
-import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.DoNotRetryIOException;
-import org.apache.hadoop.hbase.coprocessor.BulkLoadObserver;
-import org.apache.hadoop.hbase.coprocessor.CoprocessorService;
-import org.apache.hadoop.hbase.coprocessor.ObserverContext;
-import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
-import org.apache.hadoop.hbase.ipc.RpcServer;
-import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.protobuf.ResponseConverter;
-import org.apache.hadoop.hbase.protobuf.generated.ClientProtos;
-import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.SecureBulkLoadService;
-import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.PrepareBulkLoadRequest;
-import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.PrepareBulkLoadResponse;
-import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.CleanupBulkLoadRequest;
-import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.CleanupBulkLoadResponse;
-import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.SecureBulkLoadHFilesRequest;
-import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.SecureBulkLoadHFilesResponse;
-import org.apache.hadoop.hbase.regionserver.Region;
-import org.apache.hadoop.hbase.regionserver.Region.BulkLoadListener;
-import org.apache.hadoop.hbase.security.SecureBulkLoadUtil;
-import org.apache.hadoop.hbase.security.User;
-import org.apache.hadoop.hbase.security.UserProvider;
-import org.apache.hadoop.hbase.security.token.FsDelegationToken;
-import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSHDFSUtils;
-import org.apache.hadoop.hbase.util.Methods;
-import org.apache.hadoop.hbase.util.Pair;
-import org.apache.hadoop.io.Text;
-import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.hadoop.security.token.Token;
-
 import java.io.IOException;
 import java.math.BigInteger;
 import java.security.PrivilegedAction;
@@ -72,6 +26,64 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hbase.Coprocessor;
+import org.apache.hadoop.hbase.CoprocessorEnvironment;
+import org.apache.hadoop.hbase.DoNotRetryIOException;
+import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.ConnectionFactory;
+import org.apache.hadoop.hbase.coprocessor.BulkLoadObserver;
+import org.apache.hadoop.hbase.coprocessor.CoprocessorService;
+import org.apache.hadoop.hbase.coprocessor.ObserverContext;
+import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
+import org.apache.hadoop.hbase.ipc.RpcServer;
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.protobuf.ResponseConverter;
+import org.apache.hadoop.hbase.protobuf.generated.ClientProtos;
+import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.BulkLoadHFileRequest.FamilyPath;
+import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.CleanupBulkLoadRequest;
+import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.CleanupBulkLoadResponse;
+import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.PrepareBulkLoadRequest;
+import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.PrepareBulkLoadResponse;
+import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.SecureBulkLoadHFilesRequest;
+import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.SecureBulkLoadHFilesResponse;
+import org.apache.hadoop.hbase.protobuf.generated.SecureBulkLoadProtos.SecureBulkLoadService;
+import org.apache.hadoop.hbase.quotas.ActivePolicyEnforcement;
+import org.apache.hadoop.hbase.quotas.QuotaUtil;
+import org.apache.hadoop.hbase.quotas.SpaceLimitingException;
+import org.apache.hadoop.hbase.quotas.SpaceViolationPolicyEnforcement;
+import org.apache.hadoop.hbase.regionserver.Region;
+import org.apache.hadoop.hbase.regionserver.Region.BulkLoadListener;
+import org.apache.hadoop.hbase.security.SecureBulkLoadUtil;
+import org.apache.hadoop.hbase.security.User;
+import org.apache.hadoop.hbase.security.UserProvider;
+import org.apache.hadoop.hbase.security.token.FsDelegationToken;
+import org.apache.hadoop.hbase.security.token.TokenUtil;
+import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.FSHDFSUtils;
+import org.apache.hadoop.hbase.util.Methods;
+import org.apache.hadoop.hbase.util.Pair;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.token.Token;
+
+import com.google.protobuf.RpcCallback;
+import com.google.protobuf.RpcController;
+import com.google.protobuf.Service;
+
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Coprocessor service for bulk loads in secure mode.
@@ -113,6 +125,7 @@ public class SecureBulkLoadEndpoint extends SecureBulkLoadService
 
   private final static FsPermission PERM_ALL_ACCESS = FsPermission.valueOf("-rwxrwxrwx");
   private final static FsPermission PERM_HIDDEN = FsPermission.valueOf("-rwx--x--x");
+  private final static String[] FsWithoutSupportPermission = {"s3", "s3a", "s3n", "wasb", "wasbs", "swift"};
 
   private SecureRandom random;
   private FileSystem fs;
@@ -133,18 +146,24 @@ public class SecureBulkLoadEndpoint extends SecureBulkLoadService
     conf = env.getConfiguration();
     baseStagingDir = SecureBulkLoadUtil.getBaseStagingDir(conf);
     this.userProvider = UserProvider.instantiate(conf);
+    Set<String> fsSet = new HashSet<String>(Arrays.asList(FsWithoutSupportPermission));
 
     try {
-      fs = FileSystem.get(conf);
-      fs.mkdirs(baseStagingDir, PERM_HIDDEN);
-      fs.setPermission(baseStagingDir, PERM_HIDDEN);
+      fs = baseStagingDir.getFileSystem(conf);
+      if (!fs.exists(baseStagingDir)) {
+        fs.mkdirs(baseStagingDir, PERM_HIDDEN);
+      } else {
+        fs.setPermission(baseStagingDir, PERM_HIDDEN);
+      }
       //no sticky bit in hadoop-1.0, making directory nonempty so it never gets erased
       fs.mkdirs(new Path(baseStagingDir,"DONOTERASE"), PERM_HIDDEN);
       FileStatus status = fs.getFileStatus(baseStagingDir);
       if(status == null) {
         throw new IllegalStateException("Failed to create staging directory");
       }
-      if(!status.getPermission().equals(PERM_HIDDEN)) {
+      LOG.debug("Permission for " + baseStagingDir + " is " + status.getPermission());
+      String scheme = fs.getScheme().toLowerCase();
+      if (!fsSet.contains(scheme) && !status.getPermission().equals(PERM_HIDDEN)) {
         throw new IllegalStateException(
             "Directory already exists but permissions aren't set to '-rwx--x--x' ");
       }
@@ -210,13 +229,13 @@ public class SecureBulkLoadEndpoint extends SecureBulkLoadService
 
   @Override
   public void secureBulkLoadHFiles(RpcController controller,
-                                   SecureBulkLoadHFilesRequest request,
+                                   final SecureBulkLoadHFilesRequest request,
                                    RpcCallback<SecureBulkLoadHFilesResponse> done) {
     final List<Pair<byte[], String>> familyPaths = new ArrayList<Pair<byte[], String>>();
     for(ClientProtos.BulkLoadHFileRequest.FamilyPath el : request.getFamilyPathList()) {
       familyPaths.add(new Pair(el.getFamily().toByteArray(),el.getPath()));
     }
-    
+
     Token userToken = null;
     if (userProvider.isHadoopSecurityEnabled()) {
       userToken = new Token(request.getFsToken().getIdentifier().toByteArray(), request.getFsToken()
@@ -226,7 +245,18 @@ public class SecureBulkLoadEndpoint extends SecureBulkLoadService
     final String bulkToken = request.getBulkToken();
     User user = getActiveUser();
     final UserGroupInformation ugi = user.getUGI();
-    if(userToken != null) {
+    if (userProvider.isHadoopSecurityEnabled()) {
+      try (Connection connection = ConnectionFactory.createConnection(conf)) {
+        Token tok = TokenUtil.obtainToken(connection);
+        if (tok != null) {
+          boolean b = ugi.addToken(tok);
+          LOG.debug("extra token added " + tok + ", ret=" + b);
+        }
+      } catch (IOException ioe) {
+        LOG.warn("unable to add redentials", ioe);
+      }
+    }
+    if (userToken != null) {
       ugi.addToken(userToken);
     } else if (userProvider.isHadoopSecurityEnabled()) {
       //we allow this to pass through in "simple" security mode
@@ -248,7 +278,31 @@ public class SecureBulkLoadEndpoint extends SecureBulkLoadService
         return;
       }
     }
+
+    // Ensure that the files would not exceed the space quota.
+    if (QuotaUtil.isQuotaEnabled(conf)) {
+      ActivePolicyEnforcement activeSpaceQuotas = env.getRegionServerServices()
+          .getRegionServerSpaceQuotaManager().getActiveEnforcements();
+      SpaceViolationPolicyEnforcement enforcement = activeSpaceQuotas.getPolicyEnforcement(region);
+      if (null != enforcement && enforcement.shouldCheckBulkLoads()) {
+        // Bulk loads must still be atomic. We must enact all or none.
+        List<String> filePaths = new ArrayList<>(request.getFamilyPathCount());
+        for (FamilyPath familyPath : request.getFamilyPathList()) {
+          filePaths.add(familyPath.getPath());
+        }
+        try {
+          // Check if the batch of files exceeds the current quota
+          enforcement.checkBulkLoad(env.getRegionServerServices().getFileSystem(), filePaths);
+        } catch (SpaceLimitingException e) {
+          ResponseConverter.setControllerException(controller, e);
+          done.run(SecureBulkLoadHFilesResponse.newBuilder().setLoaded(false).build());
+          return;
+        }
+      }
+    }
+
     boolean loaded = false;
+    Map<byte[], List<Path>> map = null;
     if (!bypass) {
       // Get the target fs (HBase region server fs) delegation token
       // Since we have checked the permission via 'preBulkLoadHFile', now let's give
@@ -271,9 +325,9 @@ public class SecureBulkLoadEndpoint extends SecureBulkLoadService
         }
       }
 
-      loaded = ugi.doAs(new PrivilegedAction<Boolean>() {
+      map = ugi.doAs(new PrivilegedAction<Map<byte[], List<Path>>>() {
         @Override
-        public Boolean run() {
+        public Map<byte[], List<Path>> run() {
           FileSystem fs = null;
           try {
             Configuration conf = env.getConfiguration();
@@ -289,17 +343,19 @@ public class SecureBulkLoadEndpoint extends SecureBulkLoadService
             //We call bulkLoadHFiles as requesting user
             //To enable access prior to staging
             return env.getRegion().bulkLoadHFiles(familyPaths, true,
-                new SecureBulkLoadListener(fs, bulkToken, conf));
+                new SecureBulkLoadListener(fs, bulkToken, conf),
+                request.hasCopyFiles() ? request.getCopyFiles() : false);
           } catch (Exception e) {
             LOG.error("Failed to complete bulk load", e);
           }
-          return false;
+          return null;
         }
       });
+      loaded = map != null && !map.isEmpty();
     }
     if (region.getCoprocessorHost() != null) {
       try {
-        loaded = region.getCoprocessorHost().postBulkLoadHFile(familyPaths, loaded);
+        loaded = region.getCoprocessorHost().postBulkLoadHFile(familyPaths, map, loaded);
       } catch (IOException e) {
         ResponseConverter.setControllerException(controller, e);
         done.run(SecureBulkLoadHFilesResponse.newBuilder().setLoaded(false).build());
@@ -371,9 +427,18 @@ public class SecureBulkLoadEndpoint extends SecureBulkLoadService
     }
 
     @Override
-    public String prepareBulkLoad(final byte[] family, final String srcPath) throws IOException {
+    public String prepareBulkLoad(final byte[] family, final String srcPath, boolean copyFile)
+        throws IOException {
       Path p = new Path(srcPath);
       Path stageP = new Path(stagingDir, new Path(Bytes.toString(family), p.getName()));
+
+      // In case of Replication for bulk load files, hfiles are already copied in staging directory
+      if (p.equals(stageP)) {
+        LOG.debug(p.getName()
+            + " is already available in staging directory. Skipping copy or rename.");
+        return stageP.toString();
+      }
+
       if (srcFs == null) {
         srcFs = FileSystem.get(p.toUri(), conf);
       }
@@ -386,6 +451,9 @@ public class SecureBulkLoadEndpoint extends SecureBulkLoadService
       if (!FSHDFSUtils.isSameHdfs(conf, srcFs, fs)) {
         LOG.debug("Bulk-load file " + srcPath + " is on different filesystem than " +
             "the destination filesystem. Copying file over to destination staging dir.");
+        FileUtil.copy(srcFs, p, fs, stageP, false, conf);
+      } else if (copyFile) {
+        LOG.debug("Bulk-load file " + srcPath + " is copied to destination staging dir.");
         FileUtil.copy(srcFs, p, fs, stageP, false, conf);
       } else {
         LOG.debug("Moving " + p + " to " + stageP);
@@ -413,6 +481,14 @@ public class SecureBulkLoadEndpoint extends SecureBulkLoadService
       Path p = new Path(srcPath);
       Path stageP = new Path(stagingDir,
           new Path(Bytes.toString(family), p.getName()));
+
+      // In case of Replication for bulk load files, hfiles are not renamed by end point during
+      // prepare stage, so no need of rename here again
+      if (p.equals(stageP)) {
+        LOG.debug(p.getName() + " is already available in source directory. Skipping rename.");
+        return;
+      }
+
       LOG.debug("Moving " + stageP + " back to " + p);
       if(!fs.rename(stageP, p))
         throw new IOException("Failed to move HFile: " + stageP + " to " + p);

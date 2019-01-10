@@ -62,7 +62,7 @@ class DisabledWALProvider implements WALProvider {
     if (null == providerId) {
       providerId = "defaultDisabled";
     }
-    disabled = new DisabledWAL(new Path(FSUtils.getRootDir(conf), providerId), conf, null);
+    disabled = new DisabledWAL(new Path(FSUtils.getWALRootDir(conf), providerId), conf, null);
   }
 
   @Override
@@ -155,7 +155,7 @@ class DisabledWALProvider implements WALProvider {
 
     @Override
     public long append(HTableDescriptor htd, HRegionInfo info, WALKey key, WALEdit edits,
-        AtomicLong sequenceId, boolean inMemstore, List<Cell> memstoreKVs) {
+        AtomicLong sequenceId, boolean inMemstore, List<Cell> memstoreKVs) throws IOException {
       if (!this.listeners.isEmpty()) {
         final long start = System.nanoTime();
         long len = 0;
@@ -164,7 +164,7 @@ class DisabledWALProvider implements WALProvider {
         }
         final long elapsed = (System.nanoTime() - start)/1000000l;
         for (WALActionsListener listener : this.listeners) {
-          listener.postAppend(len, elapsed);
+          listener.postAppend(len, elapsed, key, edits);
         }
       }
       return -1;

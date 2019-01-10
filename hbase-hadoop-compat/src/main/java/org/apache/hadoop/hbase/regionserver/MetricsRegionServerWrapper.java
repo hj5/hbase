@@ -93,6 +93,26 @@ public interface MetricsRegionServerWrapper {
   long getStoreFileSize();
 
   /**
+   * @return Max age of store files hosted on this region server
+   */
+  long getMaxStoreFileAge();
+
+  /**
+   * @return Min age of store files hosted on this region server
+   */
+  long getMinStoreFileAge();
+
+  /**
+   *  @return Average age of store files hosted on this region server
+   */
+  long getAvgStoreFileAge();
+
+  /**
+   *  @return Number of reference files on this region server
+   */
+  long getNumReferenceFiles();
+
+  /**
    * Get the number of requests per second.
    */
   double getRequestsPerSecond();
@@ -151,12 +171,12 @@ public interface MetricsRegionServerWrapper {
   /**
    * Get the percent of HFiles' that are local.
    */
-  int getPercentFileLocal();
+  double getPercentFileLocal();
 
   /**
    * Get the percent of HFiles' that are local for secondary region replicas.
    */
-  int getPercentFileLocalSecondaryRegions();
+  double getPercentFileLocalSecondaryRegions();
 
   /**
    * Get the size of the split queue
@@ -198,14 +218,30 @@ public interface MetricsRegionServerWrapper {
   long getBlockCacheHitCount();
 
   /**
+   * Get the count of hits to primary replica in the block cache
+   */
+  long getBlockCachePrimaryHitCount();
+
+  /**
    * Get the count of misses to the block cache.
    */
   long getBlockCacheMissCount();
 
   /**
+   * Get the count of misses to primary replica in the block cache.
+   */
+  long getBlockCachePrimaryMissCount();
+
+  /**
    * Get the number of items evicted from the block cache.
    */
   long getBlockCacheEvictedCount();
+
+  /**
+   * Get the number of items evicted from primary replica in the block cache.
+   */
+  long getBlockCachePrimaryEvictedCount();
+
 
   /**
    * Get the percent of all requests that hit the block cache.
@@ -215,7 +251,7 @@ public interface MetricsRegionServerWrapper {
   /**
    * Get the percent of requests with the block cache turned on that hit the block cache.
    */
-  int getBlockCacheHitCachingPercent();
+  double getBlockCacheHitCachingPercent();
 
   /**
    * Force a re-computation of the metrics.
@@ -243,6 +279,75 @@ public interface MetricsRegionServerWrapper {
   long getMajorCompactedCellsCount();
 
   /**
+   * Gets the number of cells moved to mob during compaction.
+   */
+  long getCellsCountCompactedToMob();
+
+  /**
+   * Gets the number of cells moved from mob during compaction.
+   */
+  long getCellsCountCompactedFromMob();
+
+  /**
+   * Gets the total amount of cells moved to mob during compaction, in bytes.
+   */
+  long getCellsSizeCompactedToMob();
+
+  /**
+   * Gets the total amount of cells moved from mob during compaction, in bytes.
+   */
+  long getCellsSizeCompactedFromMob();
+
+  /**
+   * Gets the number of the flushes in mob-enabled stores.
+   */
+  long getMobFlushCount();
+
+  /**
+   * Gets the number of mob cells flushed to disk.
+   */
+  long getMobFlushedCellsCount();
+
+  /**
+   * Gets the total amount of mob cells flushed to disk, in bytes.
+   */
+  long getMobFlushedCellsSize();
+
+  /**
+   * Gets the number of scanned mob cells.
+   */
+  long getMobScanCellsCount();
+  /**
+   * Gets the total amount of scanned mob cells, in bytes.
+   */
+  long getMobScanCellsSize();
+
+  /**
+   * Gets the count of accesses to the mob file cache.
+   */
+  long getMobFileCacheAccessCount();
+
+  /**
+   * Gets the count of misses to the mob file cache.
+   */
+  long getMobFileCacheMissCount();
+
+  /**
+   * Gets the number of items evicted from the mob file cache.
+   */
+  long getMobFileCacheEvictedCount();
+
+  /**
+   * Gets the count of cached mob files.
+   */
+  long getMobFileCacheCount();
+
+  /**
+   * Gets the hit percent to the mob file cache.
+   */
+  int getMobFileCacheHitPercent();
+
+  /**
    * Get the total amount of data flushed to disk, in bytes.
    */
   long getFlushedCellsSize();
@@ -260,5 +365,70 @@ public interface MetricsRegionServerWrapper {
   /**
    * @return Count of requests blocked because the memstore size is larger than blockingMemStoreSize
    */
-  public long getBlockedRequestsCount();
+  long getBlockedRequestsCount();
+
+  /**
+   * Get the number of rpc get requests to this region server.
+   */
+  long getRpcGetRequestsCount();
+
+  /**
+   * Get the number of rpc scan requests to this region server.
+   */
+  long getRpcScanRequestsCount();
+
+  /**
+   * Get the number of rpc multi requests to this region server.
+   */
+  long getRpcMultiRequestsCount();
+
+  /**
+   * Get the number of rpc mutate requests to this region server.
+   */
+  long getRpcMutateRequestsCount();
+
+  /**
+   * Get the average region size to this region server.
+   */
+  long getAverageRegionSize();
+
+  long getDataMissCount();
+
+  long getLeafIndexMissCount();
+
+  long getBloomChunkMissCount();
+
+  long getMetaMissCount();
+
+  long getRootIndexMissCount();
+
+  long getIntermediateIndexMissCount();
+
+  long getFileInfoMissCount();
+
+  long getGeneralBloomMetaMissCount();
+
+  long getDeleteFamilyBloomMissCount();
+
+  long getTrailerMissCount();
+
+  long getDataHitCount();
+
+  long getLeafIndexHitCount();
+
+  long getBloomChunkHitCount();
+
+  long getMetaHitCount();
+
+  long getRootIndexHitCount();
+
+  long getIntermediateIndexHitCount();
+
+  long getFileInfoHitCount();
+
+  long getGeneralBloomMetaHitCount();
+
+  long getDeleteFamilyBloomHitCount();
+
+  long getTrailerHitCount();
 }

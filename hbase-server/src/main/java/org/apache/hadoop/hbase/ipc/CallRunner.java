@@ -16,13 +16,16 @@ package org.apache.hadoop.hbase.ipc;
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import java.net.InetSocketAddress;
 import java.nio.channels.ClosedChannelException;
 
+import org.apache.hadoop.hbase.CallDroppedException;
 import org.apache.hadoop.hbase.CellScanner;
+import org.apache.hadoop.hbase.HBaseInterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.ipc.RpcServer.Call;
 import org.apache.hadoop.hbase.monitoring.MonitoredRPCHandler;
-import org.apache.hadoop.hbase.monitoring.TaskMonitor;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringUtils;
@@ -36,8 +39,11 @@ import com.google.protobuf.Message;
  * {@link RpcScheduler}.  Call {@link #run()} to actually execute the contained
  * RpcServer.Call
  */
-@InterfaceAudience.Private
+@InterfaceAudience.LimitedPrivate({HBaseInterfaceAudience.COPROC, HBaseInterfaceAudience.PHOENIX})
+@InterfaceStability.Evolving
 public class CallRunner {
+  private static final CallDroppedException CALL_DROPPED_EXCEPTION
+  = new CallDroppedException();
   private Call call;
   private RpcServerInterface rpcServer;
   private MonitoredRPCHandler status;
@@ -52,12 +58,17 @@ public class CallRunner {
     this.call = call;
     this.rpcServer = rpcServer;
     // Add size of the call to queue size.
-    this.rpcServer.addCallSize(call.getSize());
-    this.status = getStatus();
+    if (call != null && rpcServer != null) {
+      this.rpcServer.addCallSize(call.getSize());
+    }
   }
 
   public Call getCall() {
     return call;
+  }
+
+  public void setStatus(MonitoredRPCHandler status) {
+    this.status = status;
   }
 
   /**
@@ -66,7 +77,6 @@ public class CallRunner {
   private void cleanup() {
     this.call = null;
     this.rpcServer = null;
-    this.status = null;
   }
 
   public void run() {
@@ -91,8 +101,9 @@ public class CallRunner {
       TraceScope traceScope = null;
       try {
         if (!this.rpcServer.isStarted()) {
-          throw new ServerNotRunningYetException("Server " + rpcServer.getListenerAddress()
-              + " is not running yet");
+          InetSocketAddress address = rpcServer.getListenerAddress();
+          throw new ServerNotRunningYetException("Server " +
+              (address != null ? address : "(channel closed)") + " is not running yet");
         }
         if (call.tinfo != null) {
           traceScope = Trace.startSpan(call.toTraceString(), call.tinfo);
@@ -134,9 +145,10 @@ public class CallRunner {
         throw e;
       }
     } catch (ClosedChannelException cce) {
+      InetSocketAddress address = rpcServer.getListenerAddress();
       RpcServer.LOG.warn(Thread.currentThread().getName() + ": caught a ClosedChannelException, " +
-          "this means that the server " + rpcServer.getListenerAddress() + " was processing a " +
-          "request but the client went away. The error message was: " +
+          "this means that the server " + (address != null ? address : "(channel closed)") +
+          " was processing a request but the client went away. The error message was: " +
           cce.getMessage());
     } catch (Exception e) {
       RpcServer.LOG.warn(Thread.currentThread().getName()
@@ -148,15 +160,36 @@ public class CallRunner {
     }
   }
 
-  MonitoredRPCHandler getStatus() {
-    // It is ugly the way we park status up in RpcServer.  Let it be for now.  TODO.
-    MonitoredRPCHandler status = RpcServer.MONITORED_RPC.get();
-    if (status != null) {
-      return status;
+  /**
+   * When we want to drop this call because of server is overloaded.
+   */
+  public void drop() {
+    try {
+      if (!call.connection.channel.isOpen()) {
+        if (RpcServer.LOG.isDebugEnabled()) {
+          RpcServer.LOG.debug(Thread.currentThread().getName() + ": skipped " + call);
+        }
+        return;
+      }
+
+      // Set the response
+      InetSocketAddress address = rpcServer.getListenerAddress();
+      call.setResponse(null, null, CALL_DROPPED_EXCEPTION, "Call dropped, server "
+        + (address != null ? address : "(channel closed)") + " is overloaded, please retry.");
+      call.sendResponseIfReady();
+    } catch (ClosedChannelException cce) {
+      InetSocketAddress address = rpcServer.getListenerAddress();
+      RpcServer.LOG.warn(Thread.currentThread().getName() + ": caught a ClosedChannelException, " +
+        "this means that the server " + (address != null ? address : "(channel closed)") +
+        " was processing a request but the client went away. The error message was: " +
+        cce.getMessage());
+    } catch (Exception e) {
+      RpcServer.LOG.warn(Thread.currentThread().getName()
+        + ": caught: " + StringUtils.stringifyException(e));
+    } finally {
+      // regardless if successful or not we need to reset the callQueueSize
+      this.rpcServer.addCallSize(call.getSize() * -1);
+      cleanup();
     }
-    status = TaskMonitor.get().createRPCStatus(Thread.currentThread().getName());
-    status.pause("Waiting for a call");
-    RpcServer.MONITORED_RPC.set(status);
-    return status;
   }
 }

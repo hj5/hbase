@@ -37,6 +37,8 @@ public interface MetricsRegionSource extends Comparable<MetricsRegionSource> {
       "Number of files that were input for finished, successful or aborted, compactions";
   String COPROCESSOR_EXECUTION_STATISTICS = "coprocessorExecutionStatistics";
   String COPROCESSOR_EXECUTION_STATISTICS_DESC = "Statistics for coprocessor execution times";
+  String REPLICA_ID = "replicaid";
+  String REPLICA_ID_DESC = "The replica ID of a region. 0 is primary, otherwise is secondary";
 
   /**
    * Close the region's metrics as this region is closing.
@@ -54,16 +56,16 @@ public interface MetricsRegionSource extends Comparable<MetricsRegionSource> {
   void updateDelete();
 
   /**
-   * Update count and sizes of gets.
-   * @param getSize size in bytes of the resulting key values for a get
+   * Update time of gets
+   * @param mills time for this get operation.
    */
-  void updateGet(long getSize);
+  void updateGet(long mills);
 
   /**
-   * Update the count and sizes of resultScanner.next()
-   * @param scanSize Size in bytes of the resulting key values for a next()
-   */
-  void updateScan(long scanSize);
+   * Update time used of resultScanner.next().
+   * */
+  void updateScanTime(long mills);
+
   /**
    * Update related counts of increments.
    */

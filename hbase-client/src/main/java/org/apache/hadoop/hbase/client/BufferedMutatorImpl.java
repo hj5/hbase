@@ -72,7 +72,7 @@ public class BufferedMutatorImpl implements BufferedMutator {
     this.pool = params.getPool();
     this.listener = params.getListener();
 
-    TableConfiguration tableConf = new TableConfiguration(conf);
+    ConnectionConfiguration tableConf = new ConnectionConfiguration(conf);
     this.writeBufferSize = params.getWriteBufferSize() != BufferedMutatorParams.UNSET ?
         params.getWriteBufferSize() : tableConf.getWriteBufferSize();
     this.maxKeyValueSize = params.getMaxKeyValueSize() != BufferedMutatorParams.UNSET ?
@@ -205,7 +205,8 @@ public class BufferedMutatorImpl implements BufferedMutator {
         while (!writeAsyncBuffer.isEmpty()) {
           ap.submit(tableName, writeAsyncBuffer, true, null, false);
         }
-        RetriesExhaustedWithDetailsException error = ap.waitForAllPreviousOpsAndReset(null);
+        RetriesExhaustedWithDetailsException error =
+            ap.waitForAllPreviousOpsAndReset(null, tableName.getNameAsString());
         if (error != null) {
           if (listener == null) {
             throw error;

@@ -23,7 +23,7 @@
     <parent>
         <artifactId>hbase</artifactId>
         <groupId>org.apache.hbase</groupId>
-        <version>1.1.2</version>
+        <version>1.1.2.2.6.2.69-1</version>
         <relativePath>..</relativePath>
     </parent>
 
@@ -165,6 +165,7 @@
                           <include>Admin.proto</include>
                           <include>Aggregate.proto</include>
                           <include>Authentication.proto</include>
+                          <include>Backup.proto</include>
                           <include>Cell.proto</include>
                           <include>Client.proto</include>
                           <include>ClusterId.proto</include>
@@ -183,9 +184,12 @@
                           <include>MultiRowMutation.proto</include>
                           <include>Procedure.proto</include>
                           <include>Quota.proto</include>
+                          <include>RegionNormalizer.proto</include>
                           <include>RegionServerStatus.proto</include>
                           <include>RowProcessor.proto</include>
                           <include>RPC.proto</include>
+                          <include>RSGroup.proto</include>
+                          <include>RSGroupAdmin.proto</include>
                           <include>SecureBulkLoad.proto</include>
                           <include>Tracing.proto</include>
                           <include>VisibilityLabels.proto</include>

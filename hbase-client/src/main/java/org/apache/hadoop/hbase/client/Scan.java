@@ -233,6 +233,7 @@ public class Scan extends Query {
     consistency = scan.getConsistency();
     reversed = scan.isReversed();
     small = scan.isSmall();
+    allowPartialResults = scan.getAllowPartialResults();
     TimeRange ctr = scan.getTimeRange();
     tr = new TimeRange(ctr.getMin(), ctr.getMax());
     Map<byte[], NavigableSet<byte[]>> fams = scan.getFamilyMap();
@@ -268,6 +269,7 @@ public class Scan extends Query {
     this.familyMap = get.getFamilyMap();
     this.getScan = true;
     this.consistency = get.getConsistency();
+    this.setIsolationLevel(get.getIsolationLevel());
     for (Map.Entry<String, byte[]> attr : get.getAttributesMap().entrySet()) {
       setAttribute(attr.getKey(), attr.getValue());
     }

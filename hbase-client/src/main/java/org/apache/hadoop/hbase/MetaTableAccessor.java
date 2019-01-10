@@ -740,7 +740,9 @@ public class MetaTableAccessor {
     // iterate until all serverName columns are seen
     int replicaId = 0;
     byte[] serverColumn = getServerColumn(replicaId);
-    SortedMap<byte[], byte[]> serverMap = infoMap.tailMap(serverColumn, false);
+    SortedMap<byte[], byte[]> serverMap = null;
+    serverMap = infoMap.tailMap(serverColumn, false);
+
     if (serverMap.isEmpty()) return new RegionLocations(locations);
 
     for (Map.Entry<byte[], byte[]> entry : serverMap.entrySet()) {
@@ -842,6 +844,32 @@ public class MetaTableAccessor {
      * we are to stop now.
      */
     boolean visit(final Result r) throws IOException;
+  }
+
+  /**
+   * A Visitor that skips offline regions and split parents
+   */
+  public static abstract class DefaultVisitorBase implements Visitor {
+
+    public DefaultVisitorBase() {
+      super();
+    }
+
+    public abstract boolean visitInternal(Result rowResult) throws IOException;
+
+    @Override
+    public boolean visit(Result rowResult) throws IOException {
+      HRegionInfo info = getHRegionInfo(rowResult);
+      if (info == null) {
+        return true;
+      }
+
+      //skip over offline and split regions
+      if (!(info.isOffline() || info.isSplit())) {
+        return visitInternal(rowResult);
+      }
+      return true;
+    }
   }
 
   /**

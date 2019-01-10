@@ -34,6 +34,8 @@ import org.apache.hadoop.hbase.MasterNotRunningException;
 import org.apache.hadoop.hbase.PleaseHoldException;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.ZooKeeperConnectionException;
+import org.apache.hadoop.hbase.ipc.PayloadCarryingRpcController;
+import org.apache.hadoop.hbase.ipc.RpcControllerFactory;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.BalanceRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.CreateTableRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.DispatchMergingRegionsRequest;
@@ -45,6 +47,7 @@ import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.MoveRegionRequest
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.OfflineRegionRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.RunCatalogScanRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.SetBalancerRunningRequest;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.mockito.Matchers;
@@ -66,6 +69,10 @@ public class TestHBaseAdminNoCluster {
    * @throws MasterNotRunningException
    * @throws ServiceException
    */
+  //TODO: Clean up, with Procedure V2 and nonce to prevent the same procedure to call mulitple
+  // time, this test is invalid anymore. Just keep the test around for some time before
+  // fully removing it.
+  @Ignore
   @Test
   public void testMasterMonitorCallableRetries()
   throws MasterNotRunningException, ZooKeeperConnectionException, IOException, ServiceException {
@@ -84,6 +91,14 @@ public class TestHBaseAdminNoCluster {
       (CreateTableRequest)Mockito.any())).
         thenThrow(new ServiceException("Test fail").initCause(new PleaseHoldException("test")));
     Mockito.when(connection.getKeepAliveMasterService()).thenReturn(masterAdmin);
+    RpcControllerFactory rpcControllerFactory = Mockito.mock(RpcControllerFactory.class);
+    Mockito.when(connection.getRpcControllerFactory()).thenReturn(rpcControllerFactory);
+    Mockito.when(rpcControllerFactory.newController()).thenReturn(
+        Mockito.mock(PayloadCarryingRpcController.class));
+
+    // we need a real retrying caller
+    RpcRetryingCallerFactory callerFactory = new RpcRetryingCallerFactory(configuration);
+    Mockito.when(connection.getRpcRetryingCallerFactory()).thenReturn(callerFactory);
     Admin admin = new HBaseAdmin(connection);
     try {
       HTableDescriptor htd =
@@ -300,6 +315,14 @@ public class TestHBaseAdminNoCluster {
           }
         });
     Mockito.when(connection.getKeepAliveMasterService()).thenReturn(masterAdmin);
+    RpcControllerFactory rpcControllerFactory = Mockito.mock(RpcControllerFactory.class);
+    Mockito.when(connection.getRpcControllerFactory()).thenReturn(rpcControllerFactory);
+    Mockito.when(rpcControllerFactory.newController()).thenReturn(
+      Mockito.mock(PayloadCarryingRpcController.class));
+
+    // we need a real retrying caller
+    RpcRetryingCallerFactory callerFactory = new RpcRetryingCallerFactory(configuration);
+    Mockito.when(connection.getRpcRetryingCallerFactory()).thenReturn(callerFactory);
 
     Admin admin = null;
     try {

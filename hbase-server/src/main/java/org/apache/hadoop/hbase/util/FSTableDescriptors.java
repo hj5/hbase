@@ -124,11 +124,13 @@ public class FSTableDescriptors implements TableDescriptors {
     this.metaTableDescriptor = HTableDescriptor.metaTableDescriptor(conf);
   }
 
+  @Override
   public void setCacheOn() throws IOException {
     this.cache.clear();
     this.usecache = true;
   }
 
+  @Override
   public void setCacheOff() throws IOException {
     this.usecache = false;
     this.cache.clear();
@@ -173,6 +175,8 @@ public class FSTableDescriptors implements TableDescriptors {
     } catch (NullPointerException e) {
       LOG.debug("Exception during readTableDecriptor. Current table name = "
           + tablename, e);
+    } catch (TableInfoMissingException e) {
+      // ignore. This is regular operation
     } catch (IOException ioe) {
       LOG.debug("Exception during readTableDecriptor. Current table name = "
           + tablename, ioe);
@@ -653,7 +657,8 @@ public class FSTableDescriptors implements TableDescriptors {
         if (!fs.rename(tempPath, tableInfoDirPath)) {
           throw new IOException("Failed rename of " + tempPath + " to " + tableInfoDirPath);
         }
-        LOG.debug("Wrote descriptor into: " + tableInfoDirPath);
+        //LOG.debug("Wrote descriptor into: " + tableInfoDirPath);
+        LOG.info("Wrote descriptor into: " + tableInfoDirPath);
       } catch (IOException ioe) {
         // Presume clash of names or something; go around again.
         LOG.debug("Failed write and/or rename; retrying", ioe);

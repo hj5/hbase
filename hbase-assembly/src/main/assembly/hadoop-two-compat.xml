@@ -24,6 +24,7 @@
   <id>bin</id>
   <formats>
     <format>tar.gz</format>
+    <format>zip</format>
   </formats>
   <componentDescriptors>
       <componentDescriptor>src/main/assembly/components.xml</componentDescriptor>
@@ -43,8 +44,10 @@
         <include>org.apache.hbase:hbase-procedure</include>
         <include>org.apache.hbase:hbase-protocol</include>
         <include>org.apache.hbase:hbase-rest</include>
+        <include>org.apache.hbase:hbase-rsgroup</include>
         <include>org.apache.hbase:hbase-server</include>
         <include>org.apache.hbase:hbase-shell</include>
+        <include>org.apache.hbase:hbase-spark</include>
         <include>org.apache.hbase:hbase-thrift</include>
       </includes>
       <!-- Binaries for the dependencies also go in the hbase-jars directory -->
@@ -52,9 +55,19 @@
         <outputDirectory>lib</outputDirectory>
         <unpack>false</unpack>
         <dependencySets>
-          <dependencySet/>
+          <!-- Exclude jruby-complete from hbase_home/lib -->
+          <dependencySet>
+            <excludes>
+                <exclude>org.jruby:jruby-complete</exclude>
+                <exclude>org.apache.hbase:hbase-common*</exclude>
+            </excludes>
+           <useTransitiveFiltering>true</useTransitiveFiltering>
+          </dependencySet>
         </dependencySets>
       </binaries>
+      <excludes>
+        <exclude>org.apache.hbase:hbase-testing-util</exclude>
+      </excludes>
     </moduleSet>
   </moduleSets>
   <!-- Include the generated LICENSE and NOTICE files -->
@@ -65,12 +78,12 @@
       <destName>LICENSE.txt</destName>
       <lineEnding>unix</lineEnding>
     </file>
-    <file>
+    <!--file>
       <source>${project.build.directory}/NOTICE.aggregate</source>
       <outputDirectory>.</outputDirectory>
       <destName>NOTICE.txt</destName>
       <lineEnding>unix</lineEnding>
-    </file>
+    </file-->
     <file>
       <source>${basedir}/src/main/resources/META-INF/LEGAL</source>
       <outputDirectory>.</outputDirectory>
@@ -78,4 +91,16 @@
       <lineEnding>unix</lineEnding>
     </file>
   </files>
+
+  <!-- Add jruby-complete to hbase_home/lib/ruby.
+       Update JRUBY_PACKAGED_WITH_HBASE in bin/hbase and hbase.cmd if you would like to update outputDirectory below -->
+  <dependencySets>
+    <dependencySet>
+      <outputDirectory>lib/ruby</outputDirectory>
+      <includes>
+        <include>org.jruby:jruby-complete</include>
+      </includes>
+    </dependencySet>
+  </dependencySets>
+
 </assembly>

@@ -18,12 +18,22 @@
 
 package org.apache.hadoop.hbase.regionserver;
 
-import java.util.HashMap;
-import java.util.Map;
-
-import org.apache.commons.math.stat.descriptive.DescriptiveStatistics;
-
 public class MetricsRegionWrapperStub implements MetricsRegionWrapper {
+  int replicaid = 0;
+
+  /**
+   * Replica ID set to 0
+   */
+  public MetricsRegionWrapperStub() {
+    this.replicaid = 0;
+  }
+
+  /**
+   * Pass in replica ID
+   */
+  public MetricsRegionWrapperStub(int replicaid) {
+    this.replicaid = replicaid;
+  }
 
   @Override
   public String getTableName() {
@@ -66,6 +76,26 @@ public class MetricsRegionWrapperStub implements MetricsRegionWrapper {
   }
 
   @Override
+  public long getMaxStoreFileAge() {
+    return 2;
+  }
+
+  @Override
+  public long getMinStoreFileAge() {
+    return 2;
+  }
+
+  @Override
+  public long getAvgStoreFileAge() {
+    return 2;
+  }
+
+  @Override
+  public long getNumReferenceFiles() {
+    return 2;
+  }
+
+  @Override
   public long getWriteRequestCount() {
     return 106;
   }
@@ -86,7 +116,20 @@ public class MetricsRegionWrapperStub implements MetricsRegionWrapper {
   }
 
   @Override
-  public Map<String, DescriptiveStatistics> getCoprocessorExecutionStatistics() {
-    return new HashMap<String, DescriptiveStatistics>();
+  public int getRegionHashCode() {
+    return 42;
+  }
+
+  /**
+   * Get the replica id of this region.
+   */
+  @Override
+  public int getReplicaId() {
+    return replicaid;
+  }
+
+  @Override
+  public long getTotalRequestCount() {
+    return 0;
   }
 }

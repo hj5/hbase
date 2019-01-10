@@ -124,6 +124,20 @@ public final class HConstants {
   /** Config for pluggable load balancers */
   public static final String HBASE_MASTER_LOADBALANCER_CLASS = "hbase.master.loadbalancer.class";
 
+  /** Config for balancing the cluster by table */
+  public static final String HBASE_MASTER_LOADBALANCE_BYTABLE = "hbase.master.loadbalance.bytable";
+
+  /** The name of the ensemble table */
+  public static final String ENSEMBLE_TABLE_NAME = "hbase:ensemble";
+
+  /** Config for pluggable region normalizer */
+  public static final String HBASE_MASTER_NORMALIZER_CLASS =
+    "hbase.master.normalizer.class";
+
+  /** Config for enabling/disabling pluggable region normalizer */
+  public static final String HBASE_NORMALIZER_ENABLED =
+    "hbase.normalizer.enabled";
+
   /** Cluster is standalone or pseudo-distributed */
   public static final boolean CLUSTER_IS_LOCAL = false;
 
@@ -272,15 +286,29 @@ public final class HConstants {
   /** Parameter name for HBase client IPC pool size */
   public static final String HBASE_CLIENT_IPC_POOL_SIZE = "hbase.client.ipc.pool.size";
 
-  /** Parameter name for HBase client operation timeout, which overrides RPC timeout */
+  /** Parameter name for HBase client operation timeout. */
   public static final String HBASE_CLIENT_OPERATION_TIMEOUT = "hbase.client.operation.timeout";
 
-  /** Parameter name for HBase client operation timeout, which overrides RPC timeout */
+  /** Parameter name for HBase client operation timeout. */
   public static final String HBASE_CLIENT_META_OPERATION_TIMEOUT =
     "hbase.client.meta.operation.timeout";
 
   /** Default HBase client operation timeout, which is tantamount to a blocking call */
   public static final int DEFAULT_HBASE_CLIENT_OPERATION_TIMEOUT = 1200000;
+
+  /** Parameter name for HBase client meta replica scan call timeout. */
+  public static final String HBASE_CLIENT_MEAT_REPLICA_SCAN_TIMEOUT =
+      "hbase.client.meta.replica.scan.timeout";
+
+  /** Default HBase client meta replica scan call timeout, 1 second */
+  public static final int HBASE_CLIENT_MEAT_REPLICA_SCAN_TIMEOUT_DEFAULT = 1000000;
+
+  /** Parameter name for HBase client meta replica scan call timeout. */
+  public static final String HBASE_CLIENT_META_REPLICA_SCAN_TIMEOUT =
+      "hbase.client.meta.replica.scan.timeout";
+
+  /** Default HBase client meta replica scan call timeout, 1 second */
+  public static final int HBASE_CLIENT_META_REPLICA_SCAN_TIMEOUT_DEFAULT = 1000000;
 
   /** Used to construct the name of the log directory for a region server */
   public static final String HREGION_LOGDIR_NAME = "WALs";
@@ -817,6 +845,18 @@ public final class HConstants {
       REPLICATION_SINK_SERVICE_CLASSNAME = "hbase.replication.sink.service";
   public static final String REPLICATION_SERVICE_CLASSNAME_DEFAULT =
     "org.apache.hadoop.hbase.replication.regionserver.Replication";
+  public static final String REPLICATION_BULKLOAD_ENABLE_KEY = "hbase.replication.bulkload.enabled";
+  public static final boolean REPLICATION_BULKLOAD_ENABLE_DEFAULT = false;
+  /** Replication cluster id of source cluster which uniquely identifies itself with peer cluster */
+  public static final String REPLICATION_CLUSTER_ID = "hbase.replication.cluster.id";
+  /**
+   * Directory where the source cluster file system client configuration are placed which is used by
+   * sink cluster to copy HFiles from source cluster file system
+   */
+  public static final String REPLICATION_CONF_DIR = "hbase.replication.conf.dir";
+
+  /** Maximum time to retry for a failed bulk load request */
+  public static final String BULKLOAD_MAX_RETRIES_NUMBER = "hbase.bulkload.retries.number";
 
   /** HBCK special code name used as server name when manipulating ZK nodes */
   public static final String HBCK_CODE_NAME = "HBCKServerName";
@@ -1181,6 +1221,14 @@ public final class HConstants {
    */
   public static final String REGION_SPLIT_THREADS_MAX =
     "hbase.regionserver.region.split.threads.max";
+
+  /**
+   * Backup/Restore constants
+   */
+  public final static String BACKUP_ENABLE_KEY = "hbase.backup.enable";
+  public final static boolean BACKUP_ENABLE_DEFAULT = false;
+  public final static String BACKUP_SYSTEM_TTL_KEY = "hbase.backup.system.ttl";
+  public final static int BACKUP_SYSTEM_TTL_DEFAULT = FOREVER;
 
   private HConstants() {
     // Can't be instantiated with this ctor.

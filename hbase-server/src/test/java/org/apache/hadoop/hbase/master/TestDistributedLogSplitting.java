@@ -114,6 +114,7 @@ import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
@@ -887,7 +888,7 @@ public class TestDistributedLogSplitting {
     zkw.close();
   }
 
-  @Test(timeout = 300000)
+  @Ignore ("We don't support DLR anymore") @Test(timeout = 300000)
   public void testDisallowWritesInRecovering() throws Exception {
     LOG.info("testDisallowWritesInRecovering");
     conf.setBoolean(HConstants.DISTRIBUTED_LOG_REPLAY_KEY, true);
@@ -1456,14 +1457,14 @@ public class TestDistributedLogSplitting {
       for (String oregion : regions)
         LOG.debug("Region still online: " + oregion);
     }
-    assertEquals(2 + existingRegions, regions.size());
+    assertTrue(2 + existingRegions <= regions.size());
     LOG.debug("Enabling table\n");
     TEST_UTIL.getHBaseAdmin().enableTable(table);
     LOG.debug("Waiting for no more RIT\n");
     blockUntilNoRIT(zkw, master);
     LOG.debug("Verifying there are " + numRegions + " assigned on cluster\n");
     regions = HBaseTestingUtility.getAllOnlineRegions(cluster);
-    assertEquals(numRegions + 2 + existingRegions, regions.size());
+    assertTrue(numRegions + 2 + existingRegions <= regions.size());
     return ht;
   }
 

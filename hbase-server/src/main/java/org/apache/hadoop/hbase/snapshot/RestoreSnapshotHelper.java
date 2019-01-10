@@ -50,6 +50,7 @@ import org.apache.hadoop.hbase.errorhandling.ForeignExceptionDispatcher;
 import org.apache.hadoop.hbase.io.HFileLink;
 import org.apache.hadoop.hbase.io.Reference;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.mob.MobUtils;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
 import org.apache.hadoop.hbase.monitoring.TaskMonitor;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.SnapshotDescription;
@@ -127,6 +128,7 @@ public class RestoreSnapshotHelper {
 
   private final Configuration conf;
   private final FileSystem fs;
+  private final boolean createBackRefs;
 
   public RestoreSnapshotHelper(final Configuration conf,
       final FileSystem fs,
@@ -134,7 +136,18 @@ public class RestoreSnapshotHelper {
       final HTableDescriptor tableDescriptor,
       final Path rootDir,
       final ForeignExceptionDispatcher monitor,
-      final MonitoredTask status)
+      final MonitoredTask status) {
+    this(conf, fs, manifest, tableDescriptor, rootDir, monitor, status, true);
+  }
+
+  public RestoreSnapshotHelper(final Configuration conf,
+      final FileSystem fs,
+      final SnapshotManifest manifest,
+      final HTableDescriptor tableDescriptor,
+      final Path rootDir,
+      final ForeignExceptionDispatcher monitor,
+      final MonitoredTask status,
+      final boolean createBackRefs)
   {
     this.fs = fs;
     this.conf = conf;
@@ -146,6 +159,7 @@ public class RestoreSnapshotHelper {
     this.tableDir = FSUtils.getTableDir(rootDir, tableDesc.getTableName());
     this.monitor = monitor;
     this.status = status;
+    this.createBackRefs = createBackRefs;
   }
 
   /**
@@ -176,6 +190,8 @@ public class RestoreSnapshotHelper {
     // this instance, by removing the regions already present in the restore dir.
     Set<String> regionNames = new HashSet<String>(regionManifests.keySet());
 
+    HRegionInfo mobRegion = MobUtils.getMobRegionInfo(snapshotManifest.getTableDescriptor()
+        .getTableName());
     // Identify which region are still available and which not.
     // NOTE: we rely upon the region name as: "table name, start key, end key"
     List<HRegionInfo> tableRegions = getTableRegions();
@@ -196,6 +212,13 @@ public class RestoreSnapshotHelper {
       // Restore regions using the snapshot data
       monitor.rethrowException();
       status.setStatus("Restoring table regions...");
+      if (regionNames.contains(mobRegion.getEncodedName())) {
+        // restore the mob region in case
+        List<HRegionInfo> mobRegions = new ArrayList<HRegionInfo>(1);
+        mobRegions.add(mobRegion);
+        restoreHdfsMobRegions(exec, regionManifests, mobRegions);
+        regionNames.remove(mobRegion.getEncodedName());
+      }
       restoreHdfsRegions(exec, regionManifests, metaChanges.getRegionsToRestore());
       status.setStatus("Finished restoring all table regions.");
 
@@ -211,6 +234,11 @@ public class RestoreSnapshotHelper {
       List<HRegionInfo> regionsToAdd = new ArrayList<HRegionInfo>(regionNames.size());
 
       monitor.rethrowException();
+      // add the mob region
+      if (regionNames.contains(mobRegion.getEncodedName())) {
+        cloneHdfsMobRegion(regionManifests, mobRegion);
+        regionNames.remove(mobRegion.getEncodedName());
+      }
       for (String regionName: regionNames) {
         LOG.info("region to add: " + regionName);
         regionsToAdd.add(HRegionInfo.convert(regionManifests.get(regionName).getRegionInfo()));
@@ -380,6 +408,21 @@ public class RestoreSnapshotHelper {
     });
   }
 
+  /**
+   * Restore specified mob regions by restoring content to the snapshot state.
+   */
+  private void restoreHdfsMobRegions(final ThreadPoolExecutor exec,
+      final Map<String, SnapshotRegionManifest> regionManifests,
+      final List<HRegionInfo> regions) throws IOException {
+    if (regions == null || regions.size() == 0) return;
+    ModifyRegionUtils.editRegions(exec, regions, new ModifyRegionUtils.RegionEditTask() {
+      @Override
+      public void editRegion(final HRegionInfo hri) throws IOException {
+        restoreMobRegion(hri, regionManifests.get(hri.getEncodedName()));
+      }
+    });
+  }
+
   private Map<String, List<SnapshotRegionManifest.StoreFile>> getRegionHFileReferences(
       final SnapshotRegionManifest manifest) {
     Map<String, List<SnapshotRegionManifest.StoreFile>> familyMap =
@@ -397,10 +440,31 @@ public class RestoreSnapshotHelper {
    */
   private void restoreRegion(final HRegionInfo regionInfo,
       final SnapshotRegionManifest regionManifest) throws IOException {
+    restoreRegion(regionInfo, regionManifest, new Path(tableDir, regionInfo.getEncodedName()));
+  }
+
+  /**
+   * Restore mob region by removing files not in the snapshot
+   * and adding the missing ones from the snapshot.
+   */
+  private void restoreMobRegion(final HRegionInfo regionInfo,
+      final SnapshotRegionManifest regionManifest) throws IOException {
+    if (regionManifest == null) {
+      return;
+    }
+    restoreRegion(regionInfo, regionManifest,
+      MobUtils.getMobRegionPath(conf, tableDesc.getTableName()));
+  }
+
+  /**
+   * Restore region by removing files not in the snapshot
+   * and adding the missing ones from the snapshot.
+   */
+  private void restoreRegion(final HRegionInfo regionInfo,
+      final SnapshotRegionManifest regionManifest, Path regionDir) throws IOException {
     Map<String, List<SnapshotRegionManifest.StoreFile>> snapshotFiles =
                 getRegionHFileReferences(regionManifest);
 
-    Path regionDir = new Path(tableDir, regionInfo.getEncodedName());
     String tableName = tableDesc.getTableName().getNameAsString();
 
     // Restore families present in the table
@@ -434,13 +498,13 @@ public class RestoreSnapshotHelper {
         for (SnapshotRegionManifest.StoreFile storeFile: hfilesToAdd) {
           LOG.debug("Adding HFileLink " + storeFile.getName() +
             " to region=" + regionInfo.getEncodedName() + " table=" + tableName);
-          restoreStoreFile(familyDir, regionInfo, storeFile);
+          restoreStoreFile(familyDir, regionInfo, storeFile, createBackRefs);
         }
       } else {
         // Family doesn't exists in the snapshot
         LOG.trace("Removing family=" + Bytes.toString(family) +
           " from region=" + regionInfo.getEncodedName() + " table=" + tableName);
-        HFileArchiver.archiveFamily(fs, conf, regionInfo, tableDir, family);
+        HFileArchiver.archiveFamilyByFamilyDir(fs, conf, regionInfo, familyDir, family);
         fs.delete(familyDir, true);
       }
     }
@@ -455,7 +519,7 @@ public class RestoreSnapshotHelper {
 
       for (SnapshotRegionManifest.StoreFile storeFile: familyEntry.getValue()) {
         LOG.trace("Adding HFileLink " + storeFile.getName() + " to table=" + tableName);
-        restoreStoreFile(familyDir, regionInfo, storeFile);
+        restoreStoreFile(familyDir, regionInfo, storeFile, createBackRefs);
       }
     }
   }
@@ -520,6 +584,40 @@ public class RestoreSnapshotHelper {
   }
 
   /**
+   * Clone the mob region. For the region create a new region
+   * and create a HFileLink for each hfile.
+   */
+  private void cloneHdfsMobRegion(final Map<String, SnapshotRegionManifest> regionManifests,
+      final HRegionInfo region) throws IOException {
+    // clone region info (change embedded tableName with the new one)
+    Path clonedRegionPath = MobUtils.getMobRegionPath(conf, tableDesc.getTableName());
+    cloneRegion(clonedRegionPath, region, regionManifests.get(region.getEncodedName()));
+  }
+
+  /**
+   * Clone region directory content from the snapshot info.
+   *
+   * Each region is encoded with the table name, so the cloned region will have
+   * a different region name.
+   *
+   * Instead of copying the hfiles a HFileLink is created.
+   *
+   * @param regionDir {@link Path} cloned dir
+   * @param snapshotRegionInfo
+   */
+  private void cloneRegion(final Path regionDir, final HRegionInfo snapshotRegionInfo,
+      final SnapshotRegionManifest manifest) throws IOException {
+    final String tableName = tableDesc.getTableName().getNameAsString();
+    for (SnapshotRegionManifest.FamilyFiles familyFiles: manifest.getFamilyFilesList()) {
+      Path familyDir = new Path(regionDir, familyFiles.getFamilyName().toStringUtf8());
+      for (SnapshotRegionManifest.StoreFile storeFile: familyFiles.getStoreFilesList()) {
+        LOG.info("Adding HFileLink " + storeFile.getName() + " to table=" + tableName);
+        restoreStoreFile(familyDir, snapshotRegionInfo, storeFile, createBackRefs);
+      }
+    }
+  }
+
+  /**
    * Clone region directory content from the snapshot info.
    *
    * Each region is encoded with the table name, so the cloned region will have
@@ -532,15 +630,8 @@ public class RestoreSnapshotHelper {
    */
   private void cloneRegion(final HRegion region, final HRegionInfo snapshotRegionInfo,
       final SnapshotRegionManifest manifest) throws IOException {
-    final Path regionDir = new Path(tableDir, region.getRegionInfo().getEncodedName());
-    final String tableName = tableDesc.getTableName().getNameAsString();
-    for (SnapshotRegionManifest.FamilyFiles familyFiles: manifest.getFamilyFilesList()) {
-      Path familyDir = new Path(regionDir, familyFiles.getFamilyName().toStringUtf8());
-      for (SnapshotRegionManifest.StoreFile storeFile: familyFiles.getStoreFilesList()) {
-        LOG.info("Adding HFileLink " + storeFile.getName() + " to table=" + tableName);
-        restoreStoreFile(familyDir, snapshotRegionInfo, storeFile);
-      }
-    }
+    cloneRegion(new Path(tableDir, region.getRegionInfo().getEncodedName()), snapshotRegionInfo,
+      manifest);
   }
 
   /**
@@ -553,17 +644,19 @@ public class RestoreSnapshotHelper {
    * </ul>
    * @param familyDir destination directory for the store file
    * @param regionInfo destination region info for the table
-   * @param hfileName store file name (can be a Reference, HFileLink or simple HFile)
+   * @param storeFile store file name (can be a Reference, HFileLink or simple HFile)
+   * @param createBackRef - Whether back reference should be created. Defaults to true.
    */
   private void restoreStoreFile(final Path familyDir, final HRegionInfo regionInfo,
-      final SnapshotRegionManifest.StoreFile storeFile) throws IOException {
+      final SnapshotRegionManifest.StoreFile storeFile, final boolean createBackRef)
+          throws IOException {
     String hfileName = storeFile.getName();
     if (HFileLink.isHFileLink(hfileName)) {
-      HFileLink.createFromHFileLink(conf, fs, familyDir, hfileName);
+      HFileLink.createFromHFileLink(conf, fs, familyDir, hfileName, createBackRef);
     } else if (StoreFileInfo.isReference(hfileName)) {
       restoreReferenceFile(familyDir, regionInfo, storeFile);
     } else {
-      HFileLink.create(conf, fs, familyDir, regionInfo, hfileName);
+      HFileLink.create(conf, fs, familyDir, regionInfo, hfileName, createBackRef);
     }
   }
 
@@ -590,9 +683,10 @@ public class RestoreSnapshotHelper {
     String hfileName = storeFile.getName();
 
     // Extract the referred information (hfile name and parent region)
-    Path refPath = StoreFileInfo.getReferredToFile(new Path(new Path(new Path(
-        snapshotTable.getNameAsString(), regionInfo.getEncodedName()), familyDir.getName()),
-        hfileName));
+    Path refPath =
+        StoreFileInfo.getReferredToFile(new Path(new Path(new Path(new Path(snapshotTable
+            .getNamespaceAsString(), snapshotTable.getQualifierAsString()), regionInfo
+            .getEncodedName()), familyDir.getName()), hfileName)); 
     String snapshotRegionName = refPath.getParent().getParent().getName();
     String fileName = refPath.getName();
 
@@ -713,8 +807,9 @@ public class RestoreSnapshotHelper {
       Path restoreDir, String snapshotName) throws IOException {
     // ensure that restore dir is not under root dir
     if (!restoreDir.getFileSystem(conf).getUri().equals(rootDir.getFileSystem(conf).getUri())) {
-      throw new IllegalArgumentException("Filesystems for restore directory and HBase root directory " +
-          "should be the same");
+      throw new IllegalArgumentException("Filesystems for restore directory (" +
+          restoreDir.getFileSystem(conf).getUri() + ") and HBase root directory (" +
+          rootDir.getFileSystem(conf).getUri() + ") should be the same");
     }
     if (restoreDir.toUri().getPath().startsWith(rootDir.toUri().getPath())) {
       throw new IllegalArgumentException("Restore directory cannot be a sub directory of HBase " +
@@ -729,8 +824,10 @@ public class RestoreSnapshotHelper {
         "Restoring  snapshot '" + snapshotName + "' to directory " + restoreDir);
     ForeignExceptionDispatcher monitor = new ForeignExceptionDispatcher();
 
+    // we send createBackRefs=false so that restored hfiles do not create back reference links
+    // in the base hbase root dir.
     RestoreSnapshotHelper helper = new RestoreSnapshotHelper(conf, fs,
-      manifest, manifest.getTableDescriptor(), restoreDir, monitor, status);
+      manifest, manifest.getTableDescriptor(), restoreDir, monitor, status, false);
     helper.restoreHdfsRegions(); // TODO: parallelize.
 
     if (LOG.isDebugEnabled()) {

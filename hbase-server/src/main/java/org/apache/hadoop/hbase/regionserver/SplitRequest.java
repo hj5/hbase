@@ -26,6 +26,7 @@ import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.DroppedSnapshotException;
 import org.apache.hadoop.hbase.RemoteExceptionHandler;
 import org.apache.hadoop.hbase.master.TableLockManager.TableLock;
+import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.util.StringUtils;
@@ -41,13 +42,15 @@ class SplitRequest implements Runnable {
   private final HRegion parent;
   private final byte[] midKey;
   private final HRegionServer server;
+  private final User user;
   private TableLock tableLock;
 
-  SplitRequest(Region region, byte[] midKey, HRegionServer hrs) {
+  SplitRequest(Region region, byte[] midKey, HRegionServer hrs, User user) {
     Preconditions.checkNotNull(hrs);
     this.parent = (HRegion)region;
     this.midKey = midKey;
     this.server = hrs;
+    this.user = user;
   }
 
   @Override
@@ -55,13 +58,7 @@ class SplitRequest implements Runnable {
     return "regionName=" + parent + ", midKey=" + Bytes.toStringBinary(midKey);
   }
 
-  @Override
-  public void run() {
-    if (this.server.isStopping() || this.server.isStopped()) {
-      LOG.debug("Skipping split because server is stopping=" +
-        this.server.isStopping() + " or stopped=" + this.server.isStopped());
-      return;
-    }
+  private void doSplitting(User user) {
     boolean success = false;
     server.metricsRegionServer.incrSplitRequest();
     long startTime = EnvironmentEdgeManager.currentTime();
@@ -82,7 +79,7 @@ class SplitRequest implements Runnable {
       // the prepare call -- we are not ready to split just now. Just return.
       if (!st.prepare()) return;
       try {
-        st.execute(this.server, this.server);
+        st.execute(this.server, this.server, user);
         success = true;
       } catch (Exception e) {
         if (this.server.isStopping() || this.server.isStopped()) {
@@ -145,6 +142,16 @@ class SplitRequest implements Runnable {
       // Always log the split transaction journal
       LOG.info("Split transaction journal:\n\t" + StringUtils.join("\n\t", st.getJournal()));
     }
+  }
+
+  @Override
+  public void run() {
+    if (this.server.isStopping() || this.server.isStopped()) {
+      LOG.debug("Skipping split because server is stopping=" +
+        this.server.isStopping() + " or stopped=" + this.server.isStopped());
+      return;
+    }
+    doSplitting(user);
   }
 
   protected void releaseTableLock() {

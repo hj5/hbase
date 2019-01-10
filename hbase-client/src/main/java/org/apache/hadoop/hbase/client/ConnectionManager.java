@@ -68,6 +68,7 @@ import org.apache.hadoop.hbase.client.MetaScanner.MetaScannerVisitorBase;
 import org.apache.hadoop.hbase.client.backoff.ClientBackoffPolicy;
 import org.apache.hadoop.hbase.client.backoff.ClientBackoffPolicyFactory;
 import org.apache.hadoop.hbase.client.coprocessor.Batch;
+import org.apache.hadoop.hbase.exceptions.ClientExceptionsUtil;
 import org.apache.hadoop.hbase.exceptions.RegionMovedException;
 import org.apache.hadoop.hbase.exceptions.RegionOpeningException;
 import org.apache.hadoop.hbase.ipc.RpcClient;
@@ -79,6 +80,7 @@ import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.AdminService;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.ClientService;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.CoprocessorServiceRequest;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.CoprocessorServiceResponse;
+import org.apache.hadoop.hbase.protobuf.generated.*;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.AddColumnRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.AddColumnResponse;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.AssignRegionRequest;
@@ -127,6 +129,8 @@ import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsCatalogJanitorE
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsCatalogJanitorEnabledResponse;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsMasterRunningRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsMasterRunningResponse;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsNormalizerEnabledRequest;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsNormalizerEnabledResponse;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsProcedureDoneRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsProcedureDoneResponse;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsRestoreSnapshotDoneRequest;
@@ -151,6 +155,8 @@ import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.ModifyTableReques
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.ModifyTableResponse;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.MoveRegionRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.MoveRegionResponse;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.NormalizeRequest;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.NormalizeResponse;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.OfflineRegionRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.OfflineRegionResponse;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.RestoreSnapshotRequest;
@@ -159,6 +165,8 @@ import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.RunCatalogScanReq
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.RunCatalogScanResponse;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.SetBalancerRunningRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.SetBalancerRunningResponse;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.SetNormalizerRunningRequest;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.SetNormalizerRunningResponse;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.SetQuotaRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.SetQuotaResponse;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.ShutdownRequest;
@@ -171,6 +179,8 @@ import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.TruncateTableRequ
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.TruncateTableResponse;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.UnassignRegionRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.UnassignRegionResponse;
+import org.apache.hadoop.hbase.protobuf.generated.QuotaProtos.GetSpaceQuotaRegionSizesRequest;
+import org.apache.hadoop.hbase.protobuf.generated.QuotaProtos.GetSpaceQuotaRegionSizesResponse;
 import org.apache.hadoop.hbase.regionserver.RegionServerStoppedException;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.UserProvider;
@@ -545,7 +555,8 @@ class ConnectionManager {
   static class HConnectionImplementation implements ClusterConnection, Closeable {
     static final Log LOG = LogFactory.getLog(HConnectionImplementation.class);
     private final long pause;
-    private final boolean useMetaReplicas;
+    private boolean useMetaReplicas;
+    private final int metaReplicaCallTimeoutScanInMicroSecond;
     private final int numTries;
     final int rpcTimeout;
     private NonceGenerator nonceGenerator = null;
@@ -583,7 +594,7 @@ class ConnectionManager {
 
     // cache the configuration value for tables so that we can avoid calling
     // the expensive Configuration to fetch the value multiple times.
-    private final TableConfiguration tableConfig;
+    private final ConnectionConfiguration connectionConfig;
 
     // Client rpc instance.
     private RpcClient rpcClient;
@@ -666,13 +677,16 @@ class ConnectionManager {
      */
     protected HConnectionImplementation(Configuration conf) {
       this.conf = conf;
-      this.tableConfig = new TableConfiguration(conf);
+      this.connectionConfig = new ConnectionConfiguration(conf);
       this.closed = false;
       this.pause = conf.getLong(HConstants.HBASE_CLIENT_PAUSE,
           HConstants.DEFAULT_HBASE_CLIENT_PAUSE);
       this.useMetaReplicas = conf.getBoolean(HConstants.USE_META_REPLICAS,
           HConstants.DEFAULT_USE_META_REPLICAS);
-      this.numTries = tableConfig.getRetriesNumber();
+      this.metaReplicaCallTimeoutScanInMicroSecond =
+          connectionConfig.getMetaReplicaCallTimeoutMicroSecondScan();
+
+      this.numTries = connectionConfig.getRetriesNumber();
       this.rpcTimeout = conf.getInt(
           HConstants.HBASE_RPC_TIMEOUT_KEY,
           HConstants.DEFAULT_HBASE_RPC_TIMEOUT);
@@ -691,6 +705,14 @@ class ConnectionManager {
       this.interceptor = (new RetryingCallerInterceptorFactory(conf)).build();
       this.rpcCallerFactory = RpcRetryingCallerFactory.instantiate(conf, interceptor, this.stats);
       this.backoffPolicy = ClientBackoffPolicyFactory.create(conf);
+    }
+
+    /**
+     * @param useMetaReplicas
+     */
+    @VisibleForTesting
+    void setUseMetaReplicas(final boolean useMetaReplicas) {
+      this.useMetaReplicas = useMetaReplicas;
     }
 
     @Override
@@ -723,7 +745,7 @@ class ConnectionManager {
       if (managed) {
         throw new NeedUnmanagedConnectionException();
       }
-      return new HTable(tableName, this, tableConfig, rpcCallerFactory, rpcControllerFactory, pool);
+      return new HTable(tableName, this, connectionConfig, rpcCallerFactory, rpcControllerFactory, pool);
     }
 
     @Override
@@ -735,10 +757,10 @@ class ConnectionManager {
         params.pool(HTable.getDefaultExecutor(getConfiguration()));
       }
       if (params.getWriteBufferSize() == BufferedMutatorParams.UNSET) {
-        params.writeBufferSize(tableConfig.getWriteBufferSize());
+        params.writeBufferSize(connectionConfig.getWriteBufferSize());
       }
       if (params.getMaxKeyValueSize() == BufferedMutatorParams.UNSET) {
-        params.maxKeyValueSize(tableConfig.getMaxKeyValueSize());
+        params.maxKeyValueSize(connectionConfig.getMaxKeyValueSize());
       }
       return new BufferedMutatorImpl(this, rpcCallerFactory, rpcControllerFactory, params);
     }
@@ -1236,7 +1258,8 @@ class ConnectionManager {
         } else {
           // If we are not supposed to be using the cache, delete any existing cached location
           // so it won't interfere.
-          metaCache.clearCache(tableName, row);
+          // We are only supposed to clean the cache for the specific replicaId
+          metaCache.clearCache(tableName, row, replicaId);
         }
 
         // Query the meta region
@@ -1245,7 +1268,8 @@ class ConnectionManager {
           ReversedClientScanner rcs = null;
           try {
             rcs = new ClientSmallReversedScanner(conf, s, TableName.META_TABLE_NAME, this,
-              rpcCallerFactory, rpcControllerFactory, getMetaLookupPool(), 0);
+              rpcCallerFactory, rpcControllerFactory, getMetaLookupPool(),
+              metaReplicaCallTimeoutScanInMicroSecond);
             regionInfoRow = rcs.next();
           } finally {
             if (rcs != null) {
@@ -1345,7 +1369,8 @@ class ConnectionManager {
      * @param tableName The table name.
      * @param location the new location
      */
-    private void cacheLocation(final TableName tableName, final RegionLocations location) {
+    @Override
+    public void cacheLocation(final TableName tableName, final RegionLocations location) {
       metaCache.cacheLocation(tableName, location);
     }
 
@@ -1716,6 +1741,25 @@ class ConnectionManager {
       return new MasterKeepAliveConnection() {
         MasterServiceState mss = masterServiceState;
         @Override
+        public MasterProtos.AbortProcedureResponse abortProcedure(
+          RpcController controller,
+          MasterProtos.AbortProcedureRequest request) throws ServiceException {
+          return stub.abortProcedure(controller, request);
+        }
+        @Override
+        public MasterProtos.ListProceduresResponse listProcedures(
+            RpcController controller,
+            MasterProtos.ListProceduresRequest request) throws ServiceException {
+          return stub.listProcedures(controller, request);
+        }
+        @Override
+        public MasterProtos.BackupTablesResponse backupTables(
+            RpcController controller,
+            MasterProtos.BackupTablesRequest request)  throws ServiceException {
+          return stub.backupTables(controller, request);
+        }
+
+        @Override
         public AddColumnResponse addColumn(RpcController controller, AddColumnRequest request)
         throws ServiceException {
           return stub.addColumn(controller, request);
@@ -1815,6 +1859,13 @@ class ConnectionManager {
         }
 
         @Override
+        public MasterProtos.IsInMaintenanceModeResponse isMasterInMaintenanceMode(
+            final RpcController controller,
+            final MasterProtos.IsInMaintenanceModeRequest request) throws ServiceException {
+          return stub.isMasterInMaintenanceMode(controller, request);
+        }
+
+        @Override
         public BalanceResponse balance(RpcController controller,
             BalanceRequest request) throws ServiceException {
           return stub.balance(controller, request);
@@ -1825,6 +1876,19 @@ class ConnectionManager {
             RpcController controller, SetBalancerRunningRequest request)
             throws ServiceException {
           return stub.setBalancerRunning(controller, request);
+        }
+
+        @Override
+        public NormalizeResponse normalize(RpcController controller,
+                                       NormalizeRequest request) throws ServiceException {
+          return stub.normalize(controller, request);
+        }
+
+        @Override
+        public SetNormalizerRunningResponse setNormalizerRunning(
+          RpcController controller, SetNormalizerRunningRequest request)
+          throws ServiceException {
+          return stub.setNormalizerRunning(controller, request);
         }
 
         @Override
@@ -2029,6 +2093,33 @@ class ConnectionManager {
             IsBalancerEnabledRequest request) throws ServiceException {
           return stub.isBalancerEnabled(controller, request);
         }
+
+        @Override
+        public MasterProtos.SetSplitOrMergeEnabledResponse setSplitOrMergeEnabled(
+          RpcController controller,
+          MasterProtos.SetSplitOrMergeEnabledRequest request) throws ServiceException {
+          return stub.setSplitOrMergeEnabled(controller, request);
+        }
+
+        @Override
+        public MasterProtos.IsSplitOrMergeEnabledResponse isSplitOrMergeEnabled(
+          RpcController controller,
+          MasterProtos.IsSplitOrMergeEnabledRequest request) throws ServiceException {
+          return stub.isSplitOrMergeEnabled(controller, request);
+        }
+
+        @Override
+        public IsNormalizerEnabledResponse isNormalizerEnabled(RpcController controller,
+            IsNormalizerEnabledRequest request) throws ServiceException {
+          return stub.isNormalizerEnabled(controller, request);
+        }
+
+	      @Override
+	      public GetSpaceQuotaRegionSizesResponse getSpaceQuotaRegionSizes(
+	          RpcController controller, GetSpaceQuotaRegionSizesRequest request)
+	          throws ServiceException {
+	        return stub.getSpaceQuotaRegionSizes(controller, request);
+	      }
       };
     }
 
@@ -2141,9 +2232,9 @@ class ConnectionManager {
       }
 
       HRegionInfo regionInfo = oldLocation.getRegionInfo();
-      Throwable cause = findException(exception);
+      Throwable cause = ClientExceptionsUtil.findException(exception);
       if (cause != null) {
-        if (cause instanceof RegionTooBusyException || cause instanceof RegionOpeningException) {
+        if (!ClientExceptionsUtil.isMetaClearingException(cause)) {
           // We know that the region is still on this region server
           return;
         }
@@ -2543,6 +2634,21 @@ class ConnectionManager {
     public boolean isManaged() {
       return managed;
     }
+    
+    @Override
+    public ConnectionConfiguration getConnectionConfiguration() {
+      return this.connectionConfig;
+    }
+
+    @Override
+    public RpcRetryingCallerFactory getRpcRetryingCallerFactory() {
+      return this.rpcCallerFactory;
+    }
+
+    @Override
+    public RpcControllerFactory getRpcControllerFactory() {
+      return this.rpcControllerFactory;
+    }
   }
 
   /**
@@ -2620,45 +2726,5 @@ class ConnectionManager {
         retries.incrementAndGet();
       }
     }
-  }
-
-  /**
-   * Look for an exception we know in the remote exception:
-   * - hadoop.ipc wrapped exceptions
-   * - nested exceptions
-   *
-   * Looks for: RegionMovedException / RegionOpeningException / RegionTooBusyException
-   * @return null if we didn't find the exception, the exception otherwise.
-   */
-  public static Throwable findException(Object exception) {
-    if (exception == null || !(exception instanceof Throwable)) {
-      return null;
-    }
-    Throwable cur = (Throwable) exception;
-    while (cur != null) {
-      if (cur instanceof RegionMovedException || cur instanceof RegionOpeningException
-          || cur instanceof RegionTooBusyException) {
-        return cur;
-      }
-      if (cur instanceof RemoteException) {
-        RemoteException re = (RemoteException) cur;
-        cur = re.unwrapRemoteException(
-            RegionOpeningException.class, RegionMovedException.class,
-            RegionTooBusyException.class);
-        if (cur == null) {
-          cur = re.unwrapRemoteException();
-        }
-        // unwrapRemoteException can return the exception given as a parameter when it cannot
-        //  unwrap it. In this case, there is no need to look further
-        // noinspection ObjectEquality
-        if (cur == re) {
-          return null;
-        }
-      } else {
-        cur = cur.getCause();
-      }
-    }
-
-    return null;
   }
 }

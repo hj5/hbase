@@ -19,9 +19,9 @@ package org.apache.hadoop.hbase.filter;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.PriorityQueue;
 
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.KeyValueUtil;
@@ -84,7 +84,7 @@ public class FuzzyRowFilter extends FilterBase {
                 .getSecond()));
         throw new IllegalArgumentException("Fuzzy pair lengths do not match: " + readable);
       }
-      // update mask ( 0 -> -1 (0xff), 1 -> 0)
+      // update mask ( 0 -> -1 (0xff), 1 -> 2)
       p.setSecond(preprocessMask(p.getSecond()));
       preprocessSearchKey(p);
     }
@@ -93,25 +93,27 @@ public class FuzzyRowFilter extends FilterBase {
   }
 
   private void preprocessSearchKey(Pair<byte[], byte[]> p) {
-    if (UnsafeAccess.isAvailable() == false) {
-    	return;
+    if (UnsafeAccess.unaligned() == false) {
+      return;
     }
     byte[] key = p.getFirst();
     byte[] mask = p.getSecond();
     for (int i = 0; i < mask.length; i++) {
       // set non-fixed part of a search key to 0.
-      if (mask[i] == 0) key[i] = 0;
+      if (mask[i] == 2) {
+        key[i] = 0;
+      }
     }
   }
 
   /**
-   * We need to preprocess mask array, as since we treat 0's as unfixed positions and -1 (0xff) as
+   * We need to preprocess mask array, as since we treat 2's as unfixed positions and -1 (0xff) as
    * fixed positions
    * @param mask
    * @return mask array
    */
   private byte[] preprocessMask(byte[] mask) {
-    if (UnsafeAccess.isAvailable() == false) {
+    if (UnsafeAccess.unaligned() == false) {
       return mask;
     }
     if (isPreprocessedMask(mask)) return mask;
@@ -119,7 +121,7 @@ public class FuzzyRowFilter extends FilterBase {
       if (mask[i] == 0) {
         mask[i] = -1; // 0 -> -1
       } else if (mask[i] == 1) {
-        mask[i] = 0;// 1 -> 0
+        mask[i] = 2;// 1 -> 2
       }
     }
     return mask;
@@ -127,7 +129,7 @@ public class FuzzyRowFilter extends FilterBase {
 
   private boolean isPreprocessedMask(byte[] mask) {
     for (int i = 0; i < mask.length; i++) {
-      if (mask[i] != -1 && mask[i] != 0) {
+      if (mask[i] != -1 && mask[i] != 2) {
         return false;
       }
     }
@@ -141,6 +143,10 @@ public class FuzzyRowFilter extends FilterBase {
     for (int i = startIndex; i < size + startIndex; i++) {
       final int index = i % size;
       Pair<byte[], byte[]> fuzzyData = fuzzyKeysData.get(index);
+      // This shift is idempotent - always end up with 0 and -1 as mask values.
+      for (int j = 0; j < fuzzyData.getSecond().length; j++) {
+        fuzzyData.getSecond()[j] >>= 2;
+      }
       SatisfiesCode satisfiesCode =
           satisfies(isReversed(), c.getRowArray(), c.getRowOffset(), c.getRowLength(),
             fuzzyData.getFirst(), fuzzyData.getSecond());
@@ -151,89 +157,90 @@ public class FuzzyRowFilter extends FilterBase {
     }
     // NOT FOUND -> seek next using hint
     lastFoundIndex = -1;
+
     return ReturnCode.SEEK_NEXT_USING_HINT;
 
   }
 
   @Override
   public Cell getNextCellHint(Cell currentCell) {
-    boolean result = true;
-    if (tracker.needsUpdate()) {
-      result = tracker.updateTracker(currentCell);
-    }
+    boolean result = tracker.updateTracker(currentCell);
     if (result == false) {
       done = true;
       return null;
     }
     byte[] nextRowKey = tracker.nextRow();
-    // We need to compare nextRowKey with currentCell
-    int compareResult =
-        Bytes.compareTo(nextRowKey, 0, nextRowKey.length, currentCell.getRowArray(),
-          currentCell.getRowOffset(), currentCell.getRowLength());
-    if ((reversed && compareResult > 0) || (!reversed && compareResult < 0)) {
-      // This can happen when we have multilpe filters and some other filter
-      // returns next row with hint which is larger (smaller for reverse)
-      // than the current (really?)
-      result = tracker.updateTracker(currentCell);
-      if (result == false) {
-        done = true;
-        return null;
-      } else {
-        nextRowKey = tracker.nextRow();
-      }
-    }
     return KeyValueUtil.createFirstOnRow(nextRowKey);
   }
 
   /**
-   * If we have multiple fuzzy keys, row tracker should improve overall performance It calculates
-   * all next rows (one per every fuzzy key), sort them accordingly (ascending for regular and
-   * descending for reverse). Next time getNextCellHint is called we check row tracker first and
-   * return next row from the tracker if it exists, if there are no rows in the tracker we update
-   * tracker with a current cell and return first row.
+   * If we have multiple fuzzy keys, row tracker should improve overall performance. It calculates
+   * all next rows (one per every fuzzy key) and put them (the fuzzy key is bundled) into a priority
+   * queue so that the smallest row key always appears at queue head, which helps to decide the
+   * "Next Cell Hint". As scanning going on, the number of candidate rows in the RowTracker will
+   * remain the size of fuzzy keys until some of the fuzzy keys won't possibly have matches any
+   * more.
    */
   private class RowTracker {
-    private final List<byte[]> nextRows;
-    private int next = -1;
+    private final PriorityQueue<Pair<byte[], Pair<byte[], byte[]>>> nextRows;
+    private boolean initialized = false;
 
     RowTracker() {
-      nextRows = new ArrayList<byte[]>();
-    }
-
-    boolean needsUpdate() {
-      return next == -1 || next == nextRows.size();
+      nextRows =
+          new PriorityQueue<Pair<byte[], Pair<byte[], byte[]>>>(fuzzyKeysData.size(),
+              new Comparator<Pair<byte[], Pair<byte[], byte[]>>>() {
+                @Override
+                public int compare(Pair<byte[], Pair<byte[], byte[]>> o1,
+                    Pair<byte[], Pair<byte[], byte[]>> o2) {
+                  int compare = Bytes.compareTo(o1.getFirst(), o2.getFirst());
+                  if (!isReversed()) {
+                    return compare;
+                  } else {
+                    return -compare;
+                  }
+                }
+              });
     }
 
     byte[] nextRow() {
-      if (next < 0 || next == nextRows.size()) return null;
-      return nextRows.get(next++);
+      if (nextRows.isEmpty()) {
+        throw new IllegalStateException(
+            "NextRows should not be empty, make sure to call nextRow() after updateTracker() return true");
+      } else {
+        return nextRows.peek().getFirst();
+      }
     }
 
     boolean updateTracker(Cell currentCell) {
-      nextRows.clear();
-      for (Pair<byte[], byte[]> fuzzyData : fuzzyKeysData) {
-        byte[] nextRowKeyCandidate =
-            getNextForFuzzyRule(isReversed(), currentCell.getRowArray(),
-              currentCell.getRowOffset(), currentCell.getRowLength(), fuzzyData.getFirst(),
-              fuzzyData.getSecond());
-        if (nextRowKeyCandidate == null) {
-          continue;
+      if (!initialized) {
+        for (Pair<byte[], byte[]> fuzzyData : fuzzyKeysData) {
+          updateWith(currentCell, fuzzyData);
         }
-        nextRows.add(nextRowKeyCandidate);
+        initialized = true;
+      } else {
+        while (!nextRows.isEmpty() && !lessThan(currentCell, nextRows.peek().getFirst())) {
+          Pair<byte[], Pair<byte[], byte[]>> head = nextRows.poll();
+          Pair<byte[], byte[]> fuzzyData = head.getSecond();
+          updateWith(currentCell, fuzzyData);
+        }
       }
-      // Sort all next row candidates
-      Collections.sort(nextRows, new Comparator<byte[]>() {
-        @Override
-        public int compare(byte[] o1, byte[] o2) {
-          if (reversed) {
-            return -Bytes.compareTo(o1, o2);
-          } else {
-            return Bytes.compareTo(o1, o2);
-          }
-        }
-      });
-      next = 0;
-      return nextRows.size() > 0;
+      return !nextRows.isEmpty();
+    }
+
+    boolean lessThan(Cell currentCell, byte[] nextRowKey) {
+      int compareResult =
+          Bytes.compareTo(currentCell.getRowArray(), currentCell.getRowOffset(),
+            currentCell.getRowLength(), nextRowKey, 0, nextRowKey.length);
+      return (!isReversed() && compareResult < 0) || (isReversed() && compareResult > 0);
+    }
+
+    void updateWith(Cell currentCell, Pair<byte[], byte[]> fuzzyData) {
+      byte[] nextRowKeyCandidate =
+          getNextForFuzzyRule(isReversed(), currentCell.getRowArray(), currentCell.getRowOffset(),
+            currentCell.getRowLength(), fuzzyData.getFirst(), fuzzyData.getSecond());
+      if (nextRowKeyCandidate != null) {
+        nextRows.add(new Pair<byte[], Pair<byte[], byte[]>>(nextRowKeyCandidate, fuzzyData));
+      }
     }
 
   }
@@ -319,7 +326,7 @@ public class FuzzyRowFilter extends FilterBase {
   static SatisfiesCode satisfies(boolean reverse, byte[] row, int offset, int length,
       byte[] fuzzyKeyBytes, byte[] fuzzyKeyMeta) {
 
-    if (UnsafeAccess.isAvailable() == false) {
+    if (UnsafeAccess.unaligned() == false) {
       return satisfiesNoUnsafe(reverse, row, offset, length, fuzzyKeyBytes, fuzzyKeyMeta);
     }
 
@@ -394,8 +401,8 @@ public class FuzzyRowFilter extends FilterBase {
     return SatisfiesCode.YES;
   }
 
-  static SatisfiesCode satisfiesNoUnsafe(boolean reverse, byte[] row, int offset,
-      int length, byte[] fuzzyKeyBytes, byte[] fuzzyKeyMeta) {
+  static SatisfiesCode satisfiesNoUnsafe(boolean reverse, byte[] row, int offset, int length,
+      byte[] fuzzyKeyBytes, byte[] fuzzyKeyMeta) {
     if (row == null) {
       // do nothing, let scan to proceed
       return SatisfiesCode.YES;
@@ -584,7 +591,31 @@ public class FuzzyRowFilter extends FilterBase {
       }
     }
 
-    return result;
+    return reverse? result: trimTrailingZeroes(result, fuzzyKeyMeta, toInc);
+  }
+
+  /**
+   * For forward scanner, next cell hint should  not contain any trailing zeroes
+   * unless they are part of fuzzyKeyMeta
+   * hint = '\x01\x01\x01\x00\x00'
+   * will skip valid row '\x01\x01\x01'
+   * 
+   * @param result
+   * @param fuzzyKeyMeta
+   * @param toInc - position of incremented byte
+   * @return trimmed version of result
+   */
+  
+  private static byte[] trimTrailingZeroes(byte[] result, byte[] fuzzyKeyMeta, int toInc) {
+    int off = fuzzyKeyMeta.length >= result.length? result.length -1:
+           fuzzyKeyMeta.length -1;  
+    for( ; off >= 0; off--){
+      if(fuzzyKeyMeta[off] != 0) break;
+    }
+    if (off < toInc)  off = toInc;
+    byte[] retValue = new byte[off+1];
+    System.arraycopy(result, 0, retValue, 0, retValue.length);
+    return retValue;
   }
 
   /**

@@ -21,36 +21,40 @@ package org.apache.hadoop.hbase.ipc;
 
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.metrics.BaseSourceImpl;
+import org.apache.hadoop.metrics2.MetricHistogram;
 import org.apache.hadoop.metrics2.MetricsCollector;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.apache.hadoop.metrics2.lib.Interns;
-import org.apache.hadoop.metrics2.lib.MutableCounterLong;
-import org.apache.hadoop.metrics2.lib.MutableHistogram;
+import org.apache.hadoop.metrics2.lib.MutableFastCounter;
 
 @InterfaceAudience.Private
 public class MetricsHBaseServerSourceImpl extends BaseSourceImpl
     implements MetricsHBaseServerSource {
 
   private final MetricsHBaseServerWrapper wrapper;
-  private final MutableCounterLong authorizationSuccesses;
-  private final MutableCounterLong authorizationFailures;
-  private final MutableCounterLong authenticationSuccesses;
-  private final MutableCounterLong authenticationFailures;
-  private final MutableCounterLong sentBytes;
-  private final MutableCounterLong receivedBytes;
 
-  private final MutableCounterLong exceptions;
-  private final MutableCounterLong exceptionsOOO;
-  private final MutableCounterLong exceptionsBusy;
-  private final MutableCounterLong exceptionsUnknown;
-  private final MutableCounterLong exceptionsSanity;
-  private final MutableCounterLong exceptionsNSRE;
-  private final MutableCounterLong exceptionsMoved;
+  private final MutableFastCounter authorizationSuccesses;
+  private final MutableFastCounter authorizationFailures;
+  private final MutableFastCounter authenticationSuccesses;
+  private final MutableFastCounter authenticationFailures;
+  private final MutableFastCounter sentBytes;
+  private final MutableFastCounter receivedBytes;
+
+  private final MutableFastCounter exceptions;
+  private final MutableFastCounter exceptionsOOO;
+  private final MutableFastCounter exceptionsBusy;
+  private final MutableFastCounter exceptionsUnknown;
+  private final MutableFastCounter exceptionsScannerReset;
+  private final MutableFastCounter exceptionsSanity;
+  private final MutableFastCounter exceptionsNSRE;
+  private final MutableFastCounter exceptionsMoved;
 
 
-  private MutableHistogram queueCallTime;
-  private MutableHistogram processCallTime;
-  private MutableHistogram totalCallTime;
+  private MetricHistogram queueCallTime;
+  private MetricHistogram processCallTime;
+  private MetricHistogram totalCallTime;
+  private MetricHistogram requestSize;
+  private MetricHistogram responseSize;
 
   public MetricsHBaseServerSourceImpl(String metricsName,
                                       String metricsDescription,
@@ -72,6 +76,8 @@ public class MetricsHBaseServerSourceImpl extends BaseSourceImpl
         .newCounter(EXCEPTIONS_BUSY_NAME, EXCEPTIONS_TYPE_DESC, 0L);
     this.exceptionsUnknown = this.getMetricsRegistry()
         .newCounter(EXCEPTIONS_UNKNOWN_NAME, EXCEPTIONS_TYPE_DESC, 0L);
+    this.exceptionsScannerReset = this.getMetricsRegistry()
+        .newCounter(EXCEPTIONS_SCANNER_RESET_NAME, EXCEPTIONS_TYPE_DESC, 0L);
     this.exceptionsSanity = this.getMetricsRegistry()
         .newCounter(EXCEPTIONS_SANITY_NAME, EXCEPTIONS_TYPE_DESC, 0L);
     this.exceptionsMoved = this.getMetricsRegistry()
@@ -87,12 +93,16 @@ public class MetricsHBaseServerSourceImpl extends BaseSourceImpl
         SENT_BYTES_DESC, 0L);
     this.receivedBytes = this.getMetricsRegistry().newCounter(RECEIVED_BYTES_NAME,
         RECEIVED_BYTES_DESC, 0L);
-    this.queueCallTime = this.getMetricsRegistry().newHistogram(QUEUE_CALL_TIME_NAME,
+    this.queueCallTime = this.getMetricsRegistry().newTimeHistogram(QUEUE_CALL_TIME_NAME,
         QUEUE_CALL_TIME_DESC);
-    this.processCallTime = this.getMetricsRegistry().newHistogram(PROCESS_CALL_TIME_NAME,
+    this.processCallTime = this.getMetricsRegistry().newTimeHistogram(PROCESS_CALL_TIME_NAME,
         PROCESS_CALL_TIME_DESC);
-    this.totalCallTime = this.getMetricsRegistry().newHistogram(TOTAL_CALL_TIME_NAME,
+    this.totalCallTime = this.getMetricsRegistry().newTimeHistogram(TOTAL_CALL_TIME_NAME,
         TOTAL_CALL_TIME_DESC);
+    this.requestSize = this.getMetricsRegistry().newSizeHistogram(REQUEST_SIZE_NAME,
+        REQUEST_SIZE_DESC);
+    this.responseSize = this.getMetricsRegistry().newSizeHistogram(RESPONSE_SIZE_NAME,
+              RESPONSE_SIZE_DESC);
   }
 
   @Override
@@ -141,6 +151,11 @@ public class MetricsHBaseServerSourceImpl extends BaseSourceImpl
   }
 
   @Override
+  public void scannerResetException() {
+    exceptionsScannerReset.incr();
+  }
+
+  @Override
   public void tooBusyException() {
     exceptionsBusy.incr();
   }
@@ -159,6 +174,12 @@ public class MetricsHBaseServerSourceImpl extends BaseSourceImpl
   public void receivedBytes(int count) {
     this.receivedBytes.incr(count);
   }
+
+  @Override
+  public void sentResponse(long count) { this.responseSize.add(count); }
+
+  @Override
+  public void receivedRequest(long count) { this.requestSize.add(count); }
 
   @Override
   public void dequeuedCall(int qTime) {
@@ -190,7 +211,11 @@ public class MetricsHBaseServerSourceImpl extends BaseSourceImpl
           .addGauge(Interns.info(NUM_OPEN_CONNECTIONS_NAME,
               NUM_OPEN_CONNECTIONS_DESC), wrapper.getNumOpenConnections())
           .addGauge(Interns.info(NUM_ACTIVE_HANDLER_NAME,
-              NUM_ACTIVE_HANDLER_DESC), wrapper.getActiveRpcHandlerCount());
+              NUM_ACTIVE_HANDLER_DESC), wrapper.getActiveRpcHandlerCount())
+          .addCounter(Interns.info(NUM_GENERAL_CALLS_DROPPED_NAME,
+              NUM_GENERAL_CALLS_DROPPED_DESC), wrapper.getNumGeneralCallsDropped())
+          .addCounter(Interns.info(NUM_LIFO_MODE_SWITCHES_NAME,
+              NUM_LIFO_MODE_SWITCHES_DESC), wrapper.getNumLifoModeSwitches());
     }
 
     metricsRegistry.snapshot(mrb, all);

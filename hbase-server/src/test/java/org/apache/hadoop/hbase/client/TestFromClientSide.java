@@ -26,7 +26,6 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -37,10 +36,13 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
+import java.util.NavigableSet;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.log4j.Level;
@@ -63,10 +65,14 @@ import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.RegionLocations;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.UnknownScannerException;
 import org.apache.hadoop.hbase.Waiter;
 import org.apache.hadoop.hbase.client.metrics.ScanMetrics;
+import org.apache.hadoop.hbase.coprocessor.BaseRegionObserver;
 import org.apache.hadoop.hbase.coprocessor.CoprocessorHost;
 import org.apache.hadoop.hbase.coprocessor.MultiRowMutationEndpoint;
+import org.apache.hadoop.hbase.coprocessor.ObserverContext;
+import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.filter.BinaryComparator;
 import org.apache.hadoop.hbase.filter.CompareFilter;
 import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
@@ -92,11 +98,14 @@ import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.MutationProto;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.MutationProto.MutationType;
 import org.apache.hadoop.hbase.protobuf.generated.MultiRowMutationProtos.MultiRowMutationService;
 import org.apache.hadoop.hbase.protobuf.generated.MultiRowMutationProtos.MutateRowsRequest;
-import org.apache.hadoop.hbase.regionserver.HRegion;
+import org.apache.hadoop.hbase.regionserver.DelegatingKeyValueScanner;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
+import org.apache.hadoop.hbase.regionserver.KeyValueScanner;
 import org.apache.hadoop.hbase.regionserver.NoSuchColumnFamilyException;
 import org.apache.hadoop.hbase.regionserver.Region;
+import org.apache.hadoop.hbase.regionserver.ScanInfo;
 import org.apache.hadoop.hbase.regionserver.Store;
+import org.apache.hadoop.hbase.regionserver.StoreScanner;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
@@ -120,6 +129,7 @@ import org.junit.experimental.categories.Category;
 @Category(LargeTests.class)
 @SuppressWarnings ("deprecation")
 public class TestFromClientSide {
+  // NOTE: Increment tests were moved to their own class, TestIncrementsFromClientSide.
   final Log LOG = LogFactory.getLog(getClass());
   protected final static HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
   private static byte [] ROW = Bytes.toBytes("testRow");
@@ -587,6 +597,141 @@ public class TestFromClientSide {
     assertEquals(rowCount - endKeyCount, countGreater);
   }
 
+  /**
+   * This is a coprocessor to inject a test failure so that a store scanner.reseek() call will
+   * fail with an IOException() on the first call.
+   */
+  public static class ExceptionInReseekRegionObserver extends BaseRegionObserver {
+    static AtomicLong reqCount = new AtomicLong(0);
+    static AtomicBoolean isDoNotRetry = new AtomicBoolean(false); // whether to throw DNRIOE
+    static AtomicBoolean throwOnce = new AtomicBoolean(true); // whether to only throw once
+
+    static void reset() {
+      reqCount.set(0);
+      isDoNotRetry.set(false);
+      throwOnce.set(true);
+    }
+
+    class MyStoreScanner extends StoreScanner {
+      public MyStoreScanner(Store store, ScanInfo scanInfo, Scan scan, NavigableSet<byte[]> columns,
+          long readPt) throws IOException {
+        super(store, scanInfo, scan, columns, readPt);
+      }
+
+      @Override
+      protected List<KeyValueScanner> selectScannersFrom(
+          List<? extends KeyValueScanner> allScanners) {
+        List<KeyValueScanner> scanners = super.selectScannersFrom(allScanners);
+        List<KeyValueScanner> newScanners = new ArrayList<>(scanners.size());
+        for (KeyValueScanner scanner : scanners) {
+          newScanners.add(new DelegatingKeyValueScanner(scanner) {
+            @Override
+            public boolean reseek(Cell key) throws IOException {
+              reqCount.incrementAndGet();
+              if (!throwOnce.get()||  reqCount.get() == 1) {
+                if (isDoNotRetry.get()) {
+                  throw new DoNotRetryIOException("Injected exception");
+                } else {
+                  throw new IOException("Injected exception");
+                }
+              }
+              return super.reseek(key);
+            }
+          });
+        }
+        return newScanners;
+      }
+    }
+
+    @Override
+    public KeyValueScanner preStoreScannerOpen(ObserverContext<RegionCoprocessorEnvironment> c,
+        Store store, Scan scan, NavigableSet<byte[]> targetCols, KeyValueScanner s) throws IOException {
+      return new MyStoreScanner(store, store.getScanInfo(), scan, targetCols, Long.MAX_VALUE);
+    }
+  }
+
+  /**
+   * Tests the case where a Scan can throw an IOException in the middle of the seek / reseek
+   * leaving the server side RegionScanner to be in dirty state. The client has to ensure that the
+   * ClientScanner does not get an exception and also sees all the data.
+   * @throws IOException
+   * @throws InterruptedException
+   */
+  @Test
+  public void testClientScannerIsResetWhenScanThrowsIOException()
+  throws IOException, InterruptedException {
+    TEST_UTIL.getConfiguration().setBoolean("hbase.client.log.scanner.activity", true);
+    TableName name = TableName.valueOf("testClientScannerIsResetWhenScanThrowsIOException");
+
+    HTableDescriptor htd = TEST_UTIL.createTableDescriptor(name, FAMILY);
+    htd.addCoprocessor(ExceptionInReseekRegionObserver.class.getName());
+    TEST_UTIL.getHBaseAdmin().createTable(htd);
+    ExceptionInReseekRegionObserver.reset();
+    ExceptionInReseekRegionObserver.throwOnce.set(true); // throw exceptions only once
+    try (Table t = TEST_UTIL.getConnection().getTable(name)) {
+      int rowCount = TEST_UTIL.loadTable(t, FAMILY, false);
+      TEST_UTIL.getHBaseAdmin().flush(name);
+      int actualRowCount = countRows(t, new Scan().addColumn(FAMILY, FAMILY));
+      assertEquals(rowCount, actualRowCount);
+    }
+    assertTrue(ExceptionInReseekRegionObserver.reqCount.get() > 0);
+  }
+
+  /**
+   * Tests the case where a coprocessor throws a DoNotRetryIOException in the scan. The expectation
+   * is that the exception will bubble up to the client scanner instead of being retried.
+   */
+  @Test (timeout = 180000)
+  public void testScannerThrowsExceptionWhenCoprocessorThrowsDNRIOE()
+      throws IOException, InterruptedException {
+    TEST_UTIL.getConfiguration().setBoolean("hbase.client.log.scanner.activity", true);
+    TableName name = TableName.valueOf("testClientScannerIsNotRetriedWhenCoprocessorThrowsDNRIOE");
+
+    HTableDescriptor htd = TEST_UTIL.createTableDescriptor(name, FAMILY);
+    htd.addCoprocessor(ExceptionInReseekRegionObserver.class.getName());
+    TEST_UTIL.getHBaseAdmin().createTable(htd);
+    ExceptionInReseekRegionObserver.reset();
+    ExceptionInReseekRegionObserver.isDoNotRetry.set(true);
+    try (Table t = TEST_UTIL.getConnection().getTable(name)) {
+      int rowCount = TEST_UTIL.loadTable(t, FAMILY, false);
+      TEST_UTIL.getHBaseAdmin().flush(name);
+      int actualRowCount = TEST_UTIL.countRows(t, new Scan().addColumn(FAMILY, FAMILY));
+      fail("Should have thrown an exception");
+    } catch (RuntimeException expected) {
+      assertEquals(DoNotRetryIOException.class, expected.getCause().getClass());
+      // expected
+    }
+    assertTrue(ExceptionInReseekRegionObserver.reqCount.get() > 0);
+  }
+
+  /**
+   * Tests the case where a coprocessor throws a regular IOException in the scan. The expectation
+   * is that the we will keep on retrying, but fail after the retries are exhausted instead of
+   * retrying indefinitely.
+   */
+  @Test (timeout = 180000)
+  public void testScannerFailsAfterRetriesWhenCoprocessorThrowsIOE()
+      throws IOException, InterruptedException {
+    TEST_UTIL.getConfiguration().setBoolean("hbase.client.log.scanner.activity", true);
+    TableName name = TableName.valueOf("testScannerFailsAfterRetriesWhenCoprocessorThrowsIOE");
+    TEST_UTIL.getConfiguration().setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, 3);
+    HTableDescriptor htd = TEST_UTIL.createTableDescriptor(name, FAMILY);
+    htd.addCoprocessor(ExceptionInReseekRegionObserver.class.getName());
+    TEST_UTIL.getHBaseAdmin().createTable(htd);
+    ExceptionInReseekRegionObserver.reset();
+    ExceptionInReseekRegionObserver.throwOnce.set(false); // throw exceptions in every retry
+    try (Table t = TEST_UTIL.getConnection().getTable(name)) {
+      int rowCount = TEST_UTIL.loadTable(t, FAMILY, false);
+      TEST_UTIL.getHBaseAdmin().flush(name);
+      int actualRowCount = TEST_UTIL.countRows(t, new Scan().addColumn(FAMILY, FAMILY));
+      fail("Should have thrown an exception");
+    } catch (RuntimeException expected) {
+      assertEquals(UnknownScannerException.class, expected.getCause().getClass());
+      // expected
+    }
+    assertTrue(ExceptionInReseekRegionObserver.reqCount.get() >= 3);
+  }
+
   /*
    * @param key
    * @return Scan with RowFilter that does LESS than passed key.
@@ -697,7 +842,7 @@ public class TestFromClientSide {
   public void testMaxKeyValueSize() throws Exception {
     byte [] TABLE = Bytes.toBytes("testMaxKeyValueSize");
     Configuration conf = TEST_UTIL.getConfiguration();
-    String oldMaxSize = conf.get(TableConfiguration.MAX_KEYVALUE_SIZE_KEY);
+    String oldMaxSize = conf.get(ConnectionConfiguration.MAX_KEYVALUE_SIZE_KEY);
     Table ht = TEST_UTIL.createTable(TABLE, FAMILY);
     byte[] value = new byte[4 * 1024 * 1024];
     Put put = new Put(ROW);
@@ -705,7 +850,7 @@ public class TestFromClientSide {
     ht.put(put);
     try {
       TEST_UTIL.getConfiguration().setInt(
-          TableConfiguration.MAX_KEYVALUE_SIZE_KEY, 2 * 1024 * 1024);
+          ConnectionConfiguration.MAX_KEYVALUE_SIZE_KEY, 2 * 1024 * 1024);
       // Create new table so we pick up the change in Configuration.
       try (Connection connection =
           ConnectionFactory.createConnection(TEST_UTIL.getConfiguration())) {
@@ -717,7 +862,7 @@ public class TestFromClientSide {
       }
       fail("Inserting a too large KeyValue worked, should throw exception");
     } catch(Exception e) {}
-    conf.set(TableConfiguration.MAX_KEYVALUE_SIZE_KEY, oldMaxSize);
+    conf.set(ConnectionConfiguration.MAX_KEYVALUE_SIZE_KEY, oldMaxSize);
   }
 
   @Test
@@ -3139,7 +3284,7 @@ public class TestFromClientSide {
         equals(value, CellUtil.cloneValue(key)));
   }
 
-  private void assertIncrementKey(Cell key, byte [] row, byte [] family,
+  static void assertIncrementKey(Cell key, byte [] row, byte [] family,
       byte [] qualifier, long value)
   throws Exception {
     assertTrue("Expected row [" + Bytes.toString(row) + "] " +
@@ -3363,7 +3508,7 @@ public class TestFromClientSide {
     return stamps;
   }
 
-  private boolean equals(byte [] left, byte [] right) {
+  static boolean equals(byte [] left, byte [] right) {
     if (left == null && right == null) return true;
     if (left == null && right.length == 0) return true;
     if (right == null && left.length == 0) return true;
@@ -4481,264 +4626,6 @@ public class TestFromClientSide {
     assertEquals(r.getColumnLatest(FAMILY, QUALIFIERS[0]).getTimestamp(),
         r.getColumnLatest(FAMILY, QUALIFIERS[2]).getTimestamp());
   }
-
-  @Test
-  public void testIncrementWithDeletes() throws Exception {
-    LOG.info("Starting testIncrementWithDeletes");
-    final TableName TABLENAME =
-        TableName.valueOf("testIncrementWithDeletes");
-    Table ht = TEST_UTIL.createTable(TABLENAME, FAMILY);
-    final byte[] COLUMN = Bytes.toBytes("column");
-
-    ht.incrementColumnValue(ROW, FAMILY, COLUMN, 5);
-    TEST_UTIL.flush(TABLENAME);
-
-    Delete del = new Delete(ROW);
-    ht.delete(del);
-
-    ht.incrementColumnValue(ROW, FAMILY, COLUMN, 5);
-
-    Get get = new Get(ROW);
-    Result r = ht.get(get);
-    assertEquals(1, r.size());
-    assertEquals(5, Bytes.toLong(r.getValue(FAMILY, COLUMN)));
-  }
-
-  @Test
-  public void testIncrementingInvalidValue() throws Exception {
-    LOG.info("Starting testIncrementingInvalidValue");
-    final TableName TABLENAME = TableName.valueOf("testIncrementingInvalidValue");
-    Table ht = TEST_UTIL.createTable(TABLENAME, FAMILY);
-    final byte[] COLUMN = Bytes.toBytes("column");
-    Put p = new Put(ROW);
-    // write an integer here (not a Long)
-    p.add(FAMILY, COLUMN, Bytes.toBytes(5));
-    ht.put(p);
-    try {
-      ht.incrementColumnValue(ROW, FAMILY, COLUMN, 5);
-      fail("Should have thrown DoNotRetryIOException");
-    } catch (DoNotRetryIOException iox) {
-      // success
-    }
-    Increment inc = new Increment(ROW);
-    inc.addColumn(FAMILY, COLUMN, 5);
-    try {
-      ht.increment(inc);
-      fail("Should have thrown DoNotRetryIOException");
-    } catch (DoNotRetryIOException iox) {
-      // success
-    }
-  }
-
-  @Test
-  public void testIncrementInvalidArguments() throws Exception {
-    LOG.info("Starting testIncrementInvalidArguments");
-    final TableName TABLENAME = TableName.valueOf("testIncrementInvalidArguments");
-    Table ht = TEST_UTIL.createTable(TABLENAME, FAMILY);
-    final byte[] COLUMN = Bytes.toBytes("column");
-    try {
-      // try null row
-      ht.incrementColumnValue(null, FAMILY, COLUMN, 5);
-      fail("Should have thrown IOException");
-    } catch (IOException iox) {
-      // success
-    }
-    try {
-      // try null family
-      ht.incrementColumnValue(ROW, null, COLUMN, 5);
-      fail("Should have thrown IOException");
-    } catch (IOException iox) {
-      // success
-    }
-    try {
-      // try null qualifier
-      ht.incrementColumnValue(ROW, FAMILY, null, 5);
-      fail("Should have thrown IOException");
-    } catch (IOException iox) {
-      // success
-    }
-    // try null row
-    try {
-      Increment incNoRow = new Increment((byte [])null);
-      incNoRow.addColumn(FAMILY, COLUMN, 5);
-      fail("Should have thrown IllegalArgumentException");
-    } catch (IllegalArgumentException iax) {
-      // success
-    } catch (NullPointerException npe) {
-      // success
-    }
-    // try null family
-    try {
-      Increment incNoFamily = new Increment(ROW);
-      incNoFamily.addColumn(null, COLUMN, 5);
-      fail("Should have thrown IllegalArgumentException");
-    } catch (IllegalArgumentException iax) {
-      // success
-    }
-    // try null qualifier
-    try {
-      Increment incNoQualifier = new Increment(ROW);
-      incNoQualifier.addColumn(FAMILY, null, 5);
-      fail("Should have thrown IllegalArgumentException");
-    } catch (IllegalArgumentException iax) {
-      // success
-    }
-  }
-
-  @Test
-  public void testIncrementOutOfOrder() throws Exception {
-    LOG.info("Starting testIncrementOutOfOrder");
-    final TableName TABLENAME = TableName.valueOf("testIncrementOutOfOrder");
-    Table ht = TEST_UTIL.createTable(TABLENAME, FAMILY);
-
-    byte [][] QUALIFIERS = new byte [][] {
-      Bytes.toBytes("B"), Bytes.toBytes("A"), Bytes.toBytes("C")
-    };
-
-    Increment inc = new Increment(ROW);
-    for (int i=0; i<QUALIFIERS.length; i++) {
-      inc.addColumn(FAMILY, QUALIFIERS[i], 1);
-    }
-    ht.increment(inc);
-
-    // Verify expected results
-    Result r = ht.get(new Get(ROW));
-    Cell [] kvs = r.rawCells();
-    assertEquals(3, kvs.length);
-    assertIncrementKey(kvs[0], ROW, FAMILY, QUALIFIERS[1], 1);
-    assertIncrementKey(kvs[1], ROW, FAMILY, QUALIFIERS[0], 1);
-    assertIncrementKey(kvs[2], ROW, FAMILY, QUALIFIERS[2], 1);
-
-    // Now try multiple columns again
-    inc = new Increment(ROW);
-    for (int i=0; i<QUALIFIERS.length; i++) {
-      inc.addColumn(FAMILY, QUALIFIERS[i], 1);
-    }
-    ht.increment(inc);
-
-    // Verify
-    r = ht.get(new Get(ROW));
-    kvs = r.rawCells();
-    assertEquals(3, kvs.length);
-    assertIncrementKey(kvs[0], ROW, FAMILY, QUALIFIERS[1], 2);
-    assertIncrementKey(kvs[1], ROW, FAMILY, QUALIFIERS[0], 2);
-    assertIncrementKey(kvs[2], ROW, FAMILY, QUALIFIERS[2], 2);
-  }
-
-  @Test
-  public void testIncrementOnSameColumn() throws Exception {
-    LOG.info("Starting testIncrementOnSameColumn");
-    final byte[] TABLENAME = Bytes.toBytes("testIncrementOnSameColumn");
-    HTable ht = TEST_UTIL.createTable(TABLENAME, FAMILY);
-
-    byte[][] QUALIFIERS =
-        new byte[][] { Bytes.toBytes("A"), Bytes.toBytes("B"), Bytes.toBytes("C") };
-
-    Increment inc = new Increment(ROW);
-    for (int i = 0; i < QUALIFIERS.length; i++) {
-      inc.addColumn(FAMILY, QUALIFIERS[i], 1);
-      inc.addColumn(FAMILY, QUALIFIERS[i], 1);
-    }
-    ht.increment(inc);
-
-    // Verify expected results
-    Result r = ht.get(new Get(ROW));
-    Cell[] kvs = r.rawCells();
-    assertEquals(3, kvs.length);
-    assertIncrementKey(kvs[0], ROW, FAMILY, QUALIFIERS[0], 1);
-    assertIncrementKey(kvs[1], ROW, FAMILY, QUALIFIERS[1], 1);
-    assertIncrementKey(kvs[2], ROW, FAMILY, QUALIFIERS[2], 1);
-
-    // Now try multiple columns again
-    inc = new Increment(ROW);
-    for (int i = 0; i < QUALIFIERS.length; i++) {
-      inc.addColumn(FAMILY, QUALIFIERS[i], 1);
-      inc.addColumn(FAMILY, QUALIFIERS[i], 1);
-    }
-    ht.increment(inc);
-
-    // Verify
-    r = ht.get(new Get(ROW));
-    kvs = r.rawCells();
-    assertEquals(3, kvs.length);
-    assertIncrementKey(kvs[0], ROW, FAMILY, QUALIFIERS[0], 2);
-    assertIncrementKey(kvs[1], ROW, FAMILY, QUALIFIERS[1], 2);
-    assertIncrementKey(kvs[2], ROW, FAMILY, QUALIFIERS[2], 2);
-    
-    ht.close();
-  }
-
-  @Test
-  public void testIncrement() throws Exception {
-    LOG.info("Starting testIncrement");
-    final TableName TABLENAME = TableName.valueOf("testIncrement");
-    Table ht = TEST_UTIL.createTable(TABLENAME, FAMILY);
-
-    byte [][] ROWS = new byte [][] {
-        Bytes.toBytes("a"), Bytes.toBytes("b"), Bytes.toBytes("c"),
-        Bytes.toBytes("d"), Bytes.toBytes("e"), Bytes.toBytes("f"),
-        Bytes.toBytes("g"), Bytes.toBytes("h"), Bytes.toBytes("i")
-    };
-    byte [][] QUALIFIERS = new byte [][] {
-        Bytes.toBytes("a"), Bytes.toBytes("b"), Bytes.toBytes("c"),
-        Bytes.toBytes("d"), Bytes.toBytes("e"), Bytes.toBytes("f"),
-        Bytes.toBytes("g"), Bytes.toBytes("h"), Bytes.toBytes("i")
-    };
-
-    // Do some simple single-column increments
-
-    // First with old API
-    ht.incrementColumnValue(ROW, FAMILY, QUALIFIERS[0], 1);
-    ht.incrementColumnValue(ROW, FAMILY, QUALIFIERS[1], 2);
-    ht.incrementColumnValue(ROW, FAMILY, QUALIFIERS[2], 3);
-    ht.incrementColumnValue(ROW, FAMILY, QUALIFIERS[3], 4);
-
-    // Now increment things incremented with old and do some new
-    Increment inc = new Increment(ROW);
-    inc.addColumn(FAMILY, QUALIFIERS[1], 1);
-    inc.addColumn(FAMILY, QUALIFIERS[3], 1);
-    inc.addColumn(FAMILY, QUALIFIERS[4], 1);
-    ht.increment(inc);
-
-    // Verify expected results
-    Result r = ht.get(new Get(ROW));
-    Cell [] kvs = r.rawCells();
-    assertEquals(5, kvs.length);
-    assertIncrementKey(kvs[0], ROW, FAMILY, QUALIFIERS[0], 1);
-    assertIncrementKey(kvs[1], ROW, FAMILY, QUALIFIERS[1], 3);
-    assertIncrementKey(kvs[2], ROW, FAMILY, QUALIFIERS[2], 3);
-    assertIncrementKey(kvs[3], ROW, FAMILY, QUALIFIERS[3], 5);
-    assertIncrementKey(kvs[4], ROW, FAMILY, QUALIFIERS[4], 1);
-
-    // Now try multiple columns by different amounts
-    inc = new Increment(ROWS[0]);
-    for (int i=0;i<QUALIFIERS.length;i++) {
-      inc.addColumn(FAMILY, QUALIFIERS[i], i+1);
-    }
-    ht.increment(inc);
-    // Verify
-    r = ht.get(new Get(ROWS[0]));
-    kvs = r.rawCells();
-    assertEquals(QUALIFIERS.length, kvs.length);
-    for (int i=0;i<QUALIFIERS.length;i++) {
-      assertIncrementKey(kvs[i], ROWS[0], FAMILY, QUALIFIERS[i], i+1);
-    }
-
-    // Re-increment them
-    inc = new Increment(ROWS[0]);
-    for (int i=0;i<QUALIFIERS.length;i++) {
-      inc.addColumn(FAMILY, QUALIFIERS[i], i+1);
-    }
-    ht.increment(inc);
-    // Verify
-    r = ht.get(new Get(ROWS[0]));
-    kvs = r.rawCells();
-    assertEquals(QUALIFIERS.length, kvs.length);
-    for (int i=0;i<QUALIFIERS.length;i++) {
-      assertIncrementKey(kvs[i], ROWS[0], FAMILY, QUALIFIERS[i], 2*(i+1));
-    }
-  }
-
 
   @Test
   public void testClientPoolRoundRobin() throws IOException {
@@ -6430,5 +6317,21 @@ public class TestFromClientSide {
         assertNull(s.next());
       }
     }
+  }
+
+  @Test
+  public void testRegionCache() throws IOException {
+    HTableDescriptor htd = new HTableDescriptor(TableName.valueOf("testRegionCache"));
+    HColumnDescriptor fam = new HColumnDescriptor(FAMILY);
+    htd.addFamily(fam);
+    byte[][] KEYS = HBaseTestingUtility.KEYS_FOR_HBA_CREATE_TABLE;
+    Admin admin = TEST_UTIL.getHBaseAdmin();
+    admin.createTable(htd, KEYS);
+    HRegionLocator locator =
+      (HRegionLocator) admin.getConnection().getRegionLocator(htd.getTableName());
+    List<HRegionLocation> results = locator.getAllRegionLocations();
+    int number = ((ConnectionManager.HConnectionImplementation)admin.getConnection())
+      .getNumberOfCachedRegionLocations(htd.getTableName());
+    assertEquals(results.size(), number);
   }
 }

@@ -24,16 +24,15 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.ProcedureInfo;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotDisabledException;
 import org.apache.hadoop.hbase.TableNotFoundException;
 import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
-import org.apache.hadoop.hbase.procedure2.ProcedureResult;
 import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProcedureProtos.TruncateTableState;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
-
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
@@ -42,9 +41,7 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 @Category(MediumTests.class)
 public class TestTruncateTableProcedure {
@@ -96,10 +93,10 @@ public class TestTruncateTableProcedure {
         new TruncateTableProcedure(procExec.getEnvironment(), tableName, true));
 
     // Second delete should fail with TableNotFound
-    ProcedureResult result = procExec.getResult(procId);
+    ProcedureInfo result = procExec.getResult(procId);
     assertTrue(result.isFailed());
-    LOG.debug("Truncate failed with exception: " + result.getException());
-    assertTrue(result.getException().getCause() instanceof TableNotFoundException);
+    LOG.debug("Truncate failed with exception: " + result.getExceptionFullMessage());
+    assertTrue(ProcedureTestingUtility.getExceptionCause(result) instanceof TableNotFoundException);
   }
 
   @Test(timeout=60000)
@@ -113,10 +110,11 @@ public class TestTruncateTableProcedure {
         new TruncateTableProcedure(procExec.getEnvironment(), tableName, false));
 
     // Second delete should fail with TableNotDisabled
-    ProcedureResult result = procExec.getResult(procId);
+    ProcedureInfo result = procExec.getResult(procId);
     assertTrue(result.isFailed());
-    LOG.debug("Truncate failed with exception: " + result.getException());
-    assertTrue(result.getException().getCause() instanceof TableNotDisabledException);
+    LOG.debug("Truncate failed with exception: " + result.getExceptionFullMessage());
+    assertTrue(
+      ProcedureTestingUtility.getExceptionCause(result) instanceof TableNotDisabledException);
   }
 
   @Test(timeout=60000)
@@ -156,10 +154,10 @@ public class TestTruncateTableProcedure {
     UTIL.waitUntilAllRegionsAssigned(tableName);
 
     // validate the table regions and layout
+    regions = UTIL.getHBaseAdmin().getTableRegions(tableName).toArray(new HRegionInfo[0]);
     if (preserveSplits) {
-      assertEquals(1 + splitKeys.length, UTIL.getHBaseAdmin().getTableRegions(tableName).size());
+      assertEquals(1 + splitKeys.length, regions.length);
     } else {
-      regions = UTIL.getHBaseAdmin().getTableRegions(tableName).toArray(new HRegionInfo[1]);
       assertEquals(1, regions.length);
     }
     MasterProcedureTestingUtility.validateTableCreation(
@@ -221,10 +219,10 @@ public class TestTruncateTableProcedure {
     UTIL.waitUntilAllRegionsAssigned(tableName);
 
     // validate the table regions and layout
+    regions = UTIL.getHBaseAdmin().getTableRegions(tableName).toArray(new HRegionInfo[0]);
     if (preserveSplits) {
-      assertEquals(1 + splitKeys.length, UTIL.getHBaseAdmin().getTableRegions(tableName).size());
+      assertEquals(1 + splitKeys.length, regions.length);
     } else {
-      regions = UTIL.getHBaseAdmin().getTableRegions(tableName).toArray(new HRegionInfo[1]);
       assertEquals(1, regions.length);
     }
     MasterProcedureTestingUtility.validateTableCreation(

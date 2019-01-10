@@ -236,6 +236,16 @@ public class RegionStates {
   }
 
   /**
+   * @return True if hbase:meta table region is in transition.
+   */
+  public synchronized boolean isMetaRegionInTransition() {
+    for (RegionState state : regionsInTransition.values()) {
+      if (state.getRegion().isMetaRegion()) return true;
+    }
+    return false;
+  }
+
+  /**
    * @return True if specified region assigned, and not in transition.
    */
   public synchronized boolean isRegionOnline(final HRegionInfo hri) {
@@ -375,6 +385,41 @@ public class RegionStates {
     }
     map.put(encodedName, regionState);
     return oldState;
+  }
+
+  /**
+   * Set the region state to CLOSED
+   */
+  public RegionState setRegionStateTOCLOSED(
+      final byte[] regionName,
+      final ServerName serverName) {
+    HRegionInfo regionInfo = getRegionInfo(regionName);
+    return setRegionStateTOCLOSED(regionInfo, serverName);
+  }
+
+  /**
+   * Set the region state to CLOSED
+   */
+  public RegionState setRegionStateTOCLOSED(
+      final HRegionInfo regionInfo,
+      final ServerName serverName) {
+    ServerName sn = serverName;
+    if (sn == null) {
+      RegionState regionState = getRegionState(regionInfo.getEncodedName());
+      if (regionState != null) {
+        sn = regionState.getServerName();
+      }
+      // TODO: if sn is null, should we dig into
+      // lastAssignments.get(regionInfo.getEncodedName() to get the server name?
+      // For now, I just keep the same logic that works in the past
+    }
+    // We have to make sure that the last region server is set to be the same as the
+    // current RS.  If we don't do that, we could run into situation that both AM and SSH
+    // think other would do the assignment work; at the end, neither does the work and
+    // region remains RIT.
+    // See HBASE-13330 and HBASE-17023
+    setLastRegionServerOfRegion(sn, regionInfo.getEncodedName());
+    return updateRegionState(regionInfo, State.CLOSED, sn);
   }
 
   /**
@@ -660,7 +705,7 @@ public class RegionStates {
           if (state.isPendingOpenOrOpening() || state.isFailedClose() || state.isOffline()) {
             LOG.info("Found region in " + state + " to be reassigned by SSH for " + sn);
             rits.add(hri);
-          } else if(state.isSplittingNew()) {
+          } else if(state.isSplittingNew() || state.isMergingNew()) {
             regionsToCleanIfNoMetaEntry.add(state.getRegion());
           } else {
             LOG.warn("THIS SHOULD NOT HAPPEN: unexpected " + state);
@@ -994,13 +1039,14 @@ public class RegionStates {
     Map<TableName, Map<ServerName, List<HRegionInfo>>> result =
       new HashMap<TableName, Map<ServerName,List<HRegionInfo>>>();
     synchronized (this) {
-      if (!server.getConfiguration().getBoolean("hbase.master.loadbalance.bytable", false)) {
+      if (!server.getConfiguration().getBoolean(
+            HConstants.HBASE_MASTER_LOADBALANCE_BYTABLE, false)) {
         Map<ServerName, List<HRegionInfo>> svrToRegions =
           new HashMap<ServerName, List<HRegionInfo>>(serverHoldings.size());
         for (Map.Entry<ServerName, Set<HRegionInfo>> e: serverHoldings.entrySet()) {
           svrToRegions.put(e.getKey(), new ArrayList<HRegionInfo>(e.getValue()));
         }
-        result.put(TableName.valueOf("ensemble"), svrToRegions);
+        result.put(TableName.valueOf(HConstants.ENSEMBLE_TABLE_NAME), svrToRegions);
       } else {
         for (Map.Entry<ServerName, Set<HRegionInfo>> e: serverHoldings.entrySet()) {
           for (HRegionInfo hri: e.getValue()) {

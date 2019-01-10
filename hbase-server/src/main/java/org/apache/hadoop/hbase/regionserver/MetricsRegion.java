@@ -28,7 +28,6 @@ import org.apache.hadoop.hbase.CompatibilitySingletonFactory;
  */
 @InterfaceAudience.Private
 public class MetricsRegion {
-
   private final MetricsRegionSource source;
   private MetricsRegionWrapper regionWrapper;
 
@@ -50,12 +49,12 @@ public class MetricsRegion {
     source.updateDelete();
   }
 
-  public void updateGet(final long getSize) {
-    source.updateGet(getSize);
+  public void updateGet(final long t) {
+    source.updateGet(t);
   }
 
-  public void updateScanNext(final long scanSize) {
-    source.updateScan(scanSize);
+  public void updateScanTime(final long t) {
+    source.updateScanTime(t);
   }
 
   public void updateAppend() {

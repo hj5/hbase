@@ -18,6 +18,7 @@
 package org.apache.hadoop.hbase.mapreduce;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -26,6 +27,7 @@ import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
 import java.util.NavigableMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -60,9 +62,10 @@ import org.apache.hadoop.hbase.protobuf.generated.ClientProtos;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.BulkLoadHFileRequest;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.regionserver.TestHRegionServerBulkLoad;
-import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
+import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.Pair;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -193,7 +196,7 @@ public class TestLoadIncrementalHFilesSplitRecovery {
           ProtobufUtil.getOnlineRegions(hrs.getRSRpcServices())) {
         if (hri.getTable().equals(table)) {
           // splitRegion doesn't work if startkey/endkey are null
-          ProtobufUtil.split(hrs.getRSRpcServices(), hri, rowkey(ROWCOUNT / 2)); // hard code split
+          ProtobufUtil.split(null, hrs.getRSRpcServices(), hri, rowkey(ROWCOUNT / 2));
         }
       }
 
@@ -276,8 +279,8 @@ public class TestLoadIncrementalHFilesSplitRecovery {
       LoadIncrementalHFiles lih = new LoadIncrementalHFiles(util.getConfiguration()) {
         @Override
         protected List<LoadQueueItem> tryAtomicRegionLoad(final Connection conn,
-            TableName tableName, final byte[] first, Collection<LoadQueueItem> lqis)
-                throws IOException {
+            TableName tableName, final byte[] first, Collection<LoadQueueItem> lqis,
+            boolean copyFile) throws IOException {
           int i = attmptedCalls.incrementAndGet();
           if (i == 1) {
             Connection errConn = null;
@@ -288,10 +291,10 @@ public class TestLoadIncrementalHFilesSplitRecovery {
               throw new RuntimeException("mocking cruft, should never happen");
             }
             failedCalls.incrementAndGet();
-            return super.tryAtomicRegionLoad((HConnection)errConn, tableName, first, lqis);
+            return super.tryAtomicRegionLoad((HConnection)errConn, tableName, first, lqis,copyFile);
           }
 
-          return super.tryAtomicRegionLoad((HConnection)conn, tableName, first, lqis);
+          return super.tryAtomicRegionLoad((HConnection)conn, tableName, first, lqis, copyFile);
         }
       };
       try {
@@ -352,13 +355,15 @@ public class TestLoadIncrementalHFilesSplitRecovery {
         @Override
         protected void bulkLoadPhase(final Table htable, final Connection conn,
             ExecutorService pool, Deque<LoadQueueItem> queue,
-            final Multimap<ByteBuffer, LoadQueueItem> regionGroups) throws IOException {
+            final Multimap<ByteBuffer, LoadQueueItem> regionGroups, boolean copyFile,
+            Map<LoadQueueItem, ByteBuffer> item2RegionMap)
+                throws IOException {
           int i = attemptedCalls.incrementAndGet();
           if (i == 1) {
             // On first attempt force a split.
             forceSplit(table);
           }
-          super.bulkLoadPhase(htable, conn, pool, queue, regionGroups);
+          super.bulkLoadPhase(htable, conn, pool, queue, regionGroups, copyFile, item2RegionMap);
         }
       };
 
@@ -393,13 +398,14 @@ public class TestLoadIncrementalHFilesSplitRecovery {
       LoadIncrementalHFiles lih = new LoadIncrementalHFiles(
           util.getConfiguration()) {
         @Override
-        protected List<LoadQueueItem> groupOrSplit(
+        protected Pair<List<LoadQueueItem>, String> groupOrSplit(
             Multimap<ByteBuffer, LoadQueueItem> regionGroups,
             final LoadQueueItem item, final Table htable,
             final Pair<byte[][], byte[][]> startEndKeys) throws IOException {
-          List<LoadQueueItem> lqis = super.groupOrSplit(regionGroups, item, htable, startEndKeys);
-          if (lqis != null) {
-            countedLqis.addAndGet(lqis.size());
+          Pair<List<LoadQueueItem>, String> lqis = super.groupOrSplit(regionGroups, item, htable,
+              startEndKeys);
+          if (lqis != null && lqis.getFirst() != null) {
+            countedLqis.addAndGet(lqis.getFirst().size());
           }
           return lqis;
         }
@@ -412,6 +418,40 @@ public class TestLoadIncrementalHFilesSplitRecovery {
       }
       assertExpectedTable(connection, table, ROWCOUNT, 2);
       assertEquals(20, countedLqis.get());
+    }
+  }
+
+  /**
+   * This test creates a table with many small regions.  The bulk load files
+   * would be splitted multiple times before all of them can be loaded successfully.
+   */
+  @Test (timeout=120000)
+  public void testSplitTmpFileCleanUp() throws Exception {
+    final TableName table = TableName.valueOf("splitTmpFileCleanUp");
+    byte[][] SPLIT_KEYS = new byte[][] { Bytes.toBytes("row_00000010"),
+        Bytes.toBytes("row_00000020"), Bytes.toBytes("row_00000030"),
+        Bytes.toBytes("row_00000040"), Bytes.toBytes("row_00000050")};
+    try (Connection connection = ConnectionFactory.createConnection(util.getConfiguration())) {
+      setupTableWithSplitkeys(table, 10, SPLIT_KEYS);
+
+      LoadIncrementalHFiles lih = new LoadIncrementalHFiles(util.getConfiguration());
+
+      // create HFiles
+      Path bulk = buildBulkFiles(table, 2);
+      try (Table t = connection.getTable(table)) {
+        lih.doBulkLoad(bulk, (HTable) t);
+      }
+      // family path
+      Path tmpPath = new Path(bulk, family(0));
+      // TMP_DIR under family path
+      tmpPath = new Path(tmpPath, LoadIncrementalHFiles.TMP_DIR);
+      FileSystem fs = bulk.getFileSystem(util.getConfiguration());
+      // HFiles have been splitted, there is TMP_DIR
+      assertTrue(fs.exists(tmpPath));
+      // TMP_DIR should have been cleaned-up
+      assertNull(LoadIncrementalHFiles.TMP_DIR + " should be empty.",
+        FSUtils.listStatus(fs, tmpPath));
+      assertExpectedTable(connection, table, ROWCOUNT, 2);
     }
   }
 
@@ -430,7 +470,7 @@ public class TestLoadIncrementalHFilesSplitRecovery {
         int i = 0;
 
         @Override
-        protected List<LoadQueueItem> groupOrSplit(
+        protected Pair<List<LoadQueueItem>, String> groupOrSplit(
             Multimap<ByteBuffer, LoadQueueItem> regionGroups,
             final LoadQueueItem item, final Table table,
             final Pair<byte[][], byte[][]> startEndKeys) throws IOException {
@@ -469,13 +509,15 @@ public class TestLoadIncrementalHFilesSplitRecovery {
     final AtomicInteger countedLqis = new AtomicInteger();
     LoadIncrementalHFiles loader = new LoadIncrementalHFiles(util.getConfiguration()) {
 
-      protected List<LoadQueueItem> groupOrSplit(
+      @Override
+      protected Pair<List<LoadQueueItem>, String> groupOrSplit(
           Multimap<ByteBuffer, LoadQueueItem> regionGroups,
-          final LoadQueueItem item, final HTable htable,
+          final LoadQueueItem item, final Table htable,
           final Pair<byte[][], byte[][]> startEndKeys) throws IOException {
-        List<LoadQueueItem> lqis = super.groupOrSplit(regionGroups, item, htable, startEndKeys);
-        if (lqis != null) {
-          countedLqis.addAndGet(lqis.size());
+        Pair<List<LoadQueueItem>, String> lqis = super.groupOrSplit(regionGroups, item, htable,
+            startEndKeys);
+        if (lqis != null && lqis.getFirst() != null) {
+          countedLqis.addAndGet(lqis.getFirst().size());
         }
         return lqis;
       }

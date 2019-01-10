@@ -25,6 +25,7 @@ import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.logging.Log;
@@ -40,6 +41,7 @@ import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.MasterNotRunningException;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.NotServingRegionException;
+import org.apache.hadoop.hbase.ProcedureInfo;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableExistsException;
 import org.apache.hadoop.hbase.TableName;
@@ -65,7 +67,6 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
 import com.google.protobuf.ServiceException;
-
 
 /**
  * Class to test HBaseAdmin.
@@ -751,5 +752,42 @@ public class TestAdmin2 {
     assertEquals(!initialState, prevState);
     // Current state should be the original state again
     assertEquals(initialState, admin.isBalancerEnabled());
+  }
+
+  @Test(timeout = 30000)
+  public void testRegionNormalizer() throws Exception {
+    boolean initialState = admin.isNormalizerEnabled();
+
+    // flip state
+    boolean prevState = admin.setNormalizerRunning(!initialState);
+
+    // The previous state should be the original state we observed
+    assertEquals(initialState, prevState);
+
+    // Current state should be opposite of the original
+    assertEquals(!initialState, admin.isNormalizerEnabled());
+
+    // Reset it back to what it was
+    prevState = admin.setNormalizerRunning(initialState);
+
+    // The previous state should be the opposite of the initial state
+    assertEquals(!initialState, prevState);
+    // Current state should be the original state again
+    assertEquals(initialState, admin.isNormalizerEnabled());
+  }
+
+  @Test(timeout = 30000)
+  public void testAbortProcedureFail() throws Exception {
+    Random randomGenerator = new Random();
+    long procId = randomGenerator.nextLong();
+
+    boolean abortResult = admin.abortProcedure(procId, true);
+    assertFalse(abortResult);
+  }
+
+  @Test(timeout = 300000)
+  public void testListProcedures() throws Exception {
+    ProcedureInfo[] procList = admin.listProcedures();
+    assertTrue(procList.length >= 0);
   }
 }

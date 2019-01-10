@@ -29,6 +29,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 
 import org.apache.commons.logging.Log;
@@ -41,6 +42,7 @@ import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
+import org.apache.hadoop.hbase.ProcedureInfo;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
@@ -50,6 +52,8 @@ import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.MasterCoprocessorHost;
 import org.apache.hadoop.hbase.master.RegionPlan;
 import org.apache.hadoop.hbase.master.RegionState;
+import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
+import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.RequestConverter;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.SnapshotDescription;
@@ -66,6 +70,8 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.rules.TestName;
+
+import com.google.common.net.HostAndPort;
 
 /**
  * Tests invocation of the {@link org.apache.hadoop.hbase.coprocessor.MasterObserver}
@@ -155,6 +161,10 @@ public class TestMasterObserver {
     private boolean postDisableTableHandlerCalled;
     private boolean preModifyTableHandlerCalled;
     private boolean postModifyTableHandlerCalled;
+    private boolean preAbortProcedureCalled;
+    private boolean postAbortProcedureCalled;
+    private boolean preListProceduresCalled;
+    private boolean postListProceduresCalled;
     private boolean preGetTableDescriptorsCalled;
     private boolean postGetTableDescriptorsCalled;
     private boolean postGetTableNamesCalled;
@@ -193,6 +203,10 @@ public class TestMasterObserver {
       postEnableTableCalled = false;
       preDisableTableCalled = false;
       postDisableTableCalled = false;
+      preAbortProcedureCalled = false;
+      postAbortProcedureCalled = false;
+      preListProceduresCalled = false;
+      postListProceduresCalled = false;
       preMoveCalled= false;
       postMoveCalled = false;
       preAssignCalled = false;
@@ -233,8 +247,6 @@ public class TestMasterObserver {
       postEnableTableHandlerCalled = false;
       preDisableTableHandlerCalled = false;
       postDisableTableHandlerCalled = false;
-      preModifyTableHandlerCalled = false;
-      postModifyTableHandlerCalled = false;
       preGetTableDescriptorsCalled = false;
       postGetTableDescriptorsCalled = false;
       postGetTableNamesCalled = false;
@@ -560,6 +572,49 @@ public class TestMasterObserver {
 
     public boolean preDisableTableCalledOnly() {
       return preDisableTableCalled && !postDisableTableCalled;
+    }
+
+    @Override
+    public void preAbortProcedure(
+        ObserverContext<MasterCoprocessorEnvironment> ctx,
+        final ProcedureExecutor<MasterProcedureEnv> procEnv,
+        final long procId) throws IOException {
+      preAbortProcedureCalled = true;
+    }
+
+    @Override
+    public void postAbortProcedure(
+        ObserverContext<MasterCoprocessorEnvironment> ctx) throws IOException {
+      postAbortProcedureCalled = true;
+    }
+
+    public boolean wasAbortProcedureCalled() {
+      return preAbortProcedureCalled && postAbortProcedureCalled;
+    }
+
+    public boolean wasPreAbortProcedureCalledOnly() {
+      return preAbortProcedureCalled && !postAbortProcedureCalled;
+    }
+
+    @Override
+    public void preListProcedures(
+        ObserverContext<MasterCoprocessorEnvironment> ctx) throws IOException {
+      preListProceduresCalled = true;
+    }
+
+    @Override
+    public void postListProcedures(
+        ObserverContext<MasterCoprocessorEnvironment> ctx,
+        List<ProcedureInfo> procInfoList) throws IOException {
+      postListProceduresCalled = true;
+    }
+
+    public boolean wasListProceduresCalled() {
+      return preListProceduresCalled && postListProceduresCalled;
+    }
+
+    public boolean wasPreListProceduresCalledOnly() {
+      return preListProceduresCalled && !postListProceduresCalled;
     }
 
     @Override
@@ -1163,6 +1218,56 @@ public class TestMasterObserver {
     public void postSetNamespaceQuota(final ObserverContext<MasterCoprocessorEnvironment> ctx,
         final String namespace, final Quotas quotas) throws IOException {
     }
+
+    @Override
+    public void preMoveServers(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                               Set<HostAndPort> servers, String targetGroup) throws IOException {
+    }
+
+    @Override
+    public void postMoveServers(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                                Set<HostAndPort> servers, String targetGroup) throws IOException {
+    }
+
+    @Override
+    public void preMoveTables(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                              Set<TableName> tables, String targetGroupGroup) throws IOException {
+    }
+
+    @Override
+    public void postMoveTables(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                               Set<TableName> tables, String targetGroup) throws IOException {
+    }
+
+    @Override
+    public void preAddRSGroup(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                              String name) throws IOException {
+    }
+
+    @Override
+    public void postAddRSGroup(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                               String name) throws IOException {
+    }
+
+    @Override
+    public void preRemoveRSGroup(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                                 String name) throws IOException {
+    }
+
+    @Override
+    public void postRemoveRSGroup(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                                  String name) throws IOException {
+    }
+
+    @Override
+    public void preBalanceRSGroup(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                                  String groupName) throws IOException {
+    }
+
+    @Override
+    public void postBalanceRSGroup(ObserverContext<MasterCoprocessorEnvironment> ctx,
+                                   String groupName, boolean balancerRan) throws IOException {
+    }
   }
 
   private static HBaseTestingUtility UTIL = new HBaseTestingUtility();
@@ -1663,6 +1768,38 @@ public class TestMasterObserver {
         GetTableNamesRequest.newBuilder().build());
     assertTrue("Coprocessor should be called on table names request",
       cp.wasGetTableNamesCalled());
+  }
+
+  @Test (timeout=180000)
+  public void testAbortProcedureOperation() throws Exception {
+    MiniHBaseCluster cluster = UTIL.getHBaseCluster();
+
+    HMaster master = cluster.getMaster();
+    MasterCoprocessorHost host = master.getMasterCoprocessorHost();
+    CPMasterObserver cp = (CPMasterObserver)host.findCoprocessor(
+        CPMasterObserver.class.getName());
+    cp.resetStates();
+
+    master.abortProcedure(1, true);
+    assertTrue(
+      "Coprocessor should be called on abort procedure request",
+      cp.wasAbortProcedureCalled());
+  }
+
+  @Test (timeout=180000)
+  public void testListProceduresOperation() throws Exception {
+    MiniHBaseCluster cluster = UTIL.getHBaseCluster();
+
+    HMaster master = cluster.getMaster();
+    MasterCoprocessorHost host = master.getMasterCoprocessorHost();
+    CPMasterObserver cp = (CPMasterObserver)host.findCoprocessor(
+        CPMasterObserver.class.getName());
+    cp.resetStates();
+
+    master.listProcedures();
+    assertTrue(
+      "Coprocessor should be called on list procedures request",
+      cp.wasListProceduresCalled());
   }
 
   private void deleteTable(Admin admin, TableName tableName) throws Exception {

@@ -31,6 +31,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.mob.MobConstants;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.StoreFileInfo;
 import org.apache.hadoop.hbase.util.FSUtils;
@@ -61,7 +62,8 @@ public class HFileLink extends FileLink {
    * The HFileLink describe a link to an hfile in a different table/region
    * and the name is in the form: table=region-hfile.
    * <p>
-   * Table name is ([a-zA-Z_0-9][a-zA-Z_0-9.-]*), so '=' is an invalid character for the table name.
+   * Table name is ([\p{IsAlphabetic}\p{Digit}][\p{IsAlphabetic}\p{Digit}.-]*), so '=' is an invalid
+   * character for the table name.
    * Region name is ([a-f0-9]+), so '-' is an invalid character for the region name.
    * HFile is ([0-9a-f]+(?:_SeqId_[0-9]+_)?) covering the plain hfiles (uuid)
    * and the bulk loaded (_SeqId_[0-9]+_) hfiles.
@@ -89,19 +91,21 @@ public class HFileLink extends FileLink {
 
   private final Path archivePath;
   private final Path originPath;
+  private final Path mobPath;
   private final Path tempPath;
 
   /**
    * Dead simple hfile link constructor
    */
-  public HFileLink(final Path originPath, final Path tempPath,
+  public HFileLink(final Path originPath, final Path tempPath, final Path mobPath,
                    final Path archivePath) {
-    this.tempPath  = tempPath;
+    this.tempPath = tempPath;
     this.originPath = originPath;
+    this.mobPath = mobPath;
     this.archivePath = archivePath;
-
-    setLocations(originPath, tempPath, archivePath);
+    setLocations(originPath, tempPath, mobPath, archivePath);
   }
+
 
   /**
    * @param conf {@link Configuration} from which to extract specific archive locations
@@ -114,6 +118,8 @@ public class HFileLink extends FileLink {
             HFileArchiveUtil.getArchivePath(conf), hFileLinkPattern);
   }
 
+
+
   /**
    * @param rootDir Path to the root directory where hbase files are stored
    * @param archiveDir Path to the hbase archive directory
@@ -125,8 +131,9 @@ public class HFileLink extends FileLink {
     Path hfilePath = getHFileLinkPatternRelativePath(hFileLinkPattern);
     Path tempPath = new Path(new Path(rootDir, HConstants.HBASE_TEMP_DIRECTORY), hfilePath);
     Path originPath = new Path(rootDir, hfilePath);
+    Path mobPath = new Path(new Path(rootDir, MobConstants.MOB_DIR_NAME), hfilePath);
     Path archivePath = new Path(archiveDir, hfilePath);
-    return new HFileLink(originPath, tempPath, archivePath);
+    return new HFileLink(originPath, tempPath, mobPath, archivePath);
   }
 
   /**
@@ -176,6 +183,13 @@ public class HFileLink extends FileLink {
   }
 
   /**
+   * @return the path of the mob hfiles.
+   */
+  public Path getMobPath() {
+    return this.mobPath;
+  }
+
+    /**
    * @param path Path to check.
    * @return True if the path is a HFileLink.
    */
@@ -308,9 +322,30 @@ public class HFileLink extends FileLink {
   public static boolean create(final Configuration conf, final FileSystem fs,
       final Path dstFamilyPath, final HRegionInfo hfileRegionInfo,
       final String hfileName) throws IOException {
+    return create(conf, fs, dstFamilyPath, hfileRegionInfo, hfileName, true);
+  }
+
+  /**
+   * Create a new HFileLink
+   *
+   * <p>It also adds a back-reference to the hfile back-reference directory
+   * to simplify the reference-count and the cleaning process.
+   *
+   * @param conf {@link Configuration} to read for the archive directory name
+   * @param fs {@link FileSystem} on which to write the HFileLink
+   * @param dstFamilyPath - Destination path (table/region/cf/)
+   * @param hfileRegionInfo - Linked HFile Region Info
+   * @param hfileName - Linked HFile name
+   * @param createBackRef - Whether back reference should be created. Defaults to true.
+   * @return true if the file is created, otherwise the file exists.
+   * @throws IOException on file or parent directory creation failure
+   */
+  public static boolean create(final Configuration conf, final FileSystem fs,
+      final Path dstFamilyPath, final HRegionInfo hfileRegionInfo,
+      final String hfileName, final boolean createBackRef) throws IOException {
     TableName linkedTable = hfileRegionInfo.getTable();
     String linkedRegion = hfileRegionInfo.getEncodedName();
-    return create(conf, fs, dstFamilyPath, linkedTable, linkedRegion, hfileName);
+    return create(conf, fs, dstFamilyPath, linkedTable, linkedRegion, hfileName, createBackRef);
   }
 
   /**
@@ -331,6 +366,28 @@ public class HFileLink extends FileLink {
   public static boolean create(final Configuration conf, final FileSystem fs,
       final Path dstFamilyPath, final TableName linkedTable, final String linkedRegion,
       final String hfileName) throws IOException {
+    return create(conf, fs, dstFamilyPath, linkedTable, linkedRegion, hfileName, true);
+  }
+
+  /**
+   * Create a new HFileLink
+   *
+   * <p>It also adds a back-reference to the hfile back-reference directory
+   * to simplify the reference-count and the cleaning process.
+   *
+   * @param conf {@link Configuration} to read for the archive directory name
+   * @param fs {@link FileSystem} on which to write the HFileLink
+   * @param dstFamilyPath - Destination path (table/region/cf/)
+   * @param linkedTable - Linked Table Name
+   * @param linkedRegion - Linked Region Name
+   * @param hfileName - Linked HFile name
+   * @param createBackRef - Whether back reference should be created. Defaults to true.
+   * @return true if the file is created, otherwise the file exists.
+   * @throws IOException on file or parent directory creation failure
+   */
+  public static boolean create(final Configuration conf, final FileSystem fs,
+      final Path dstFamilyPath, final TableName linkedTable, final String linkedRegion,
+      final String hfileName, final boolean createBackRef) throws IOException {
     String familyName = dstFamilyPath.getName();
     String regionName = dstFamilyPath.getParent().getName();
     String tableName = FSUtils.getTableName(dstFamilyPath.getParent().getParent())
@@ -345,19 +402,24 @@ public class HFileLink extends FileLink {
     // Make sure the FileLink reference directory exists
     Path archiveStoreDir = HFileArchiveUtil.getStoreArchivePath(conf,
           linkedTable, linkedRegion, familyName);
-    Path backRefssDir = getBackReferencesDir(archiveStoreDir, hfileName);
-    fs.mkdirs(backRefssDir);
+    Path backRefPath = null;
+    if (createBackRef) {
+      Path backRefssDir = getBackReferencesDir(archiveStoreDir, hfileName);
+      fs.mkdirs(backRefssDir);
 
-    // Create the reference for the link
-    Path backRefPath = new Path(backRefssDir, refName);
-    fs.createNewFile(backRefPath);
+      // Create the reference for the link
+      backRefPath = new Path(backRefssDir, refName);
+      fs.createNewFile(backRefPath);
+    }
     try {
       // Create the link
       return fs.createNewFile(new Path(dstFamilyPath, name));
     } catch (IOException e) {
       LOG.error("couldn't create the link=" + name + " for " + dstFamilyPath, e);
       // Revert the reference if the link creation failed
-      fs.delete(backRefPath, false);
+      if (createBackRef) {
+        fs.delete(backRefPath, false);
+      }
       throw e;
     }
   }
@@ -376,13 +438,34 @@ public class HFileLink extends FileLink {
    * @throws IOException on file or parent directory creation failure
    */
   public static boolean createFromHFileLink(final Configuration conf, final FileSystem fs,
-      final Path dstFamilyPath, final String hfileLinkName) throws IOException {
+      final Path dstFamilyPath, final String hfileLinkName)
+          throws IOException {
+    return createFromHFileLink(conf, fs, dstFamilyPath, hfileLinkName, true);
+  }
+
+  /**
+   * Create a new HFileLink starting from a hfileLink name
+   *
+   * <p>It also adds a back-reference to the hfile back-reference directory
+   * to simplify the reference-count and the cleaning process.
+   *
+   * @param conf {@link Configuration} to read for the archive directory name
+   * @param fs {@link FileSystem} on which to write the HFileLink
+   * @param dstFamilyPath - Destination path (table/region/cf/)
+   * @param hfileLinkName - HFileLink name (it contains hfile-region-table)
+   * @param createBackRef - Whether back reference should be created. Defaults to true.
+   * @return true if the file is created, otherwise the file exists.
+   * @throws IOException on file or parent directory creation failure
+   */
+  public static boolean createFromHFileLink(final Configuration conf, final FileSystem fs,
+      final Path dstFamilyPath, final String hfileLinkName, final boolean createBackRef)
+          throws IOException {
     Matcher m = LINK_NAME_PATTERN.matcher(hfileLinkName);
     if (!m.matches()) {
       throw new IllegalArgumentException(hfileLinkName + " is not a valid HFileLink name!");
     }
     return create(conf, fs, dstFamilyPath, TableName.valueOf(m.group(1), m.group(2)),
-        m.group(3), m.group(4));
+        m.group(3), m.group(4), createBackRef);
   }
 
   /**

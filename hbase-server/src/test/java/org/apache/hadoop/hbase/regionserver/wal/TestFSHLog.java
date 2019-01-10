@@ -20,11 +20,13 @@ package org.apache.hadoop.hbase.regionserver.wal;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -32,7 +34,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import org.apache.commons.lang.mutable.MutableBoolean;
 import org.apache.commons.logging.Log;
@@ -58,6 +64,8 @@ import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.coprocessor.CoprocessorHost;
 import org.apache.hadoop.hbase.coprocessor.SampleRegionWALObserver;
 import org.apache.hadoop.hbase.regionserver.HRegion;
+import org.apache.hadoop.hbase.regionserver.Region;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdge;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
@@ -85,6 +93,8 @@ public class TestFSHLog {
   protected static Configuration conf;
   protected static FileSystem fs;
   protected static Path dir;
+  protected static Path rootDir;
+  protected static Path walRootDir;
   protected final static HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
 
   @Rule
@@ -96,8 +106,10 @@ public class TestFSHLog {
     for (FileStatus dir : entries) {
       fs.delete(dir.getPath(), true);
     }
-    final Path hbaseDir = TEST_UTIL.createRootDir();
-    dir = new Path(hbaseDir, currentTest.getMethodName());
+    rootDir = TEST_UTIL.createRootDir();
+    walRootDir = TEST_UTIL.createWALRootDir();
+    dir = new Path(walRootDir, currentTest.getMethodName());
+    assertNotEquals(rootDir, walRootDir);
   }
 
   @After
@@ -130,6 +142,8 @@ public class TestFSHLog {
 
   @AfterClass
   public static void tearDownAfterClass() throws Exception {
+    fs.delete(rootDir, true);
+    fs.delete(walRootDir, true);
     TEST_UTIL.shutdownMiniCluster();
   }
 
@@ -141,7 +155,7 @@ public class TestFSHLog {
     // test to see whether the coprocessor is loaded or not.
     FSHLog log = null;
     try {
-      log = new FSHLog(fs, FSUtils.getRootDir(conf), dir.toString(),
+      log = new FSHLog(fs, walRootDir, dir.toString(),
           HConstants.HREGION_OLDLOGDIR_NAME, conf, null, true, null, null);
       WALCoprocessorHost host = log.getCoprocessorHost();
       Coprocessor c = host.findCoprocessor(SampleRegionWALObserver.class.getName());
@@ -186,7 +200,7 @@ public class TestFSHLog {
     FSHLog wal1 = null;
     FSHLog walMeta = null;
     try {
-      wal1 = new FSHLog(fs, FSUtils.getRootDir(conf), dir.toString(),
+      wal1 = new FSHLog(fs, walRootDir, dir.toString(),
           HConstants.HREGION_OLDLOGDIR_NAME, conf, null, true, null, null);
       LOG.debug("Log obtained is: " + wal1);
       Comparator<Path> comp = wal1.LOG_NAME_COMPARATOR;
@@ -196,7 +210,7 @@ public class TestFSHLog {
       assertTrue(comp.compare(p1, p1) == 0);
       // comparing with different filenum.
       assertTrue(comp.compare(p1, p2) < 0);
-      walMeta = new FSHLog(fs, FSUtils.getRootDir(conf), dir.toString(),
+      walMeta = new FSHLog(fs, walRootDir, dir.toString(),
           HConstants.HREGION_OLDLOGDIR_NAME, conf, null, true, null,
           DefaultWALProvider.META_WAL_PROVIDER_ID);
       Comparator<Path> compMeta = walMeta.LOG_NAME_COMPARATOR;
@@ -244,7 +258,7 @@ public class TestFSHLog {
     LOG.debug("testFindMemStoresEligibleForFlush");
     Configuration conf1 = HBaseConfiguration.create(conf);
     conf1.setInt("hbase.regionserver.maxlogs", 1);
-    FSHLog wal = new FSHLog(fs, FSUtils.getRootDir(conf1), dir.toString(),
+    FSHLog wal = new FSHLog(fs, walRootDir, dir.toString(),
         HConstants.HREGION_OLDLOGDIR_NAME, conf1, null, true, null, null);
     HTableDescriptor t1 =
         new HTableDescriptor(TableName.valueOf("t1")).addFamily(new HColumnDescriptor("row"));
@@ -370,7 +384,7 @@ public class TestFSHLog {
   @Test(expected=IOException.class)
   public void testFailedToCreateWALIfParentRenamed() throws IOException {
     final String name = "testFailedToCreateWALIfParentRenamed";
-    FSHLog log = new FSHLog(fs, FSUtils.getRootDir(conf), name, HConstants.HREGION_OLDLOGDIR_NAME,
+    FSHLog log = new FSHLog(fs, walRootDir, name, HConstants.HREGION_OLDLOGDIR_NAME,
         conf, null, true, null, null);
     long filenum = System.currentTimeMillis();
     Path path = log.computeFilename(filenum);
@@ -388,8 +402,8 @@ public class TestFSHLog {
    * by slowing appends in the background ring buffer thread while in foreground we call
    * flush.  The addition of the sync over HRegion in flush should fix an issue where flush was
    * returning before all of its appends had made it out to the WAL (HBASE-11109).
+   * see HBASE-11109
    * @throws IOException
-   * @see HBASE-11109
    */
   @Test
   public void testFlushSequenceIdIsGreaterThanAllEditsInHFile() throws IOException {
@@ -399,13 +413,13 @@ public class TestFSHLog {
     final byte[] rowName = tableName.getName();
     final HTableDescriptor htd = new HTableDescriptor(tableName);
     htd.addFamily(new HColumnDescriptor("f"));
-    HRegion r = HRegion.createHRegion(hri, TEST_UTIL.getDefaultRootDirPath(),
+    HRegion r = HRegion.createHRegion(hri, rootDir,
       TEST_UTIL.getConfiguration(), htd);
     HRegion.closeHRegion(r);
     final int countPerFamily = 10;
     final MutableBoolean goslow = new MutableBoolean(false);
     // subclass and doctor a method.
-    FSHLog wal = new FSHLog(FileSystem.get(conf), TEST_UTIL.getDefaultRootDirPath(),
+    FSHLog wal = new FSHLog(FileSystem.get(conf), walRootDir,
         testName, conf) {
       @Override
       void atHeadOfRingBufferEventHandlerAppend() {
@@ -417,7 +431,7 @@ public class TestFSHLog {
       }
     };
     HRegion region = HRegion.openHRegion(TEST_UTIL.getConfiguration(),
-      TEST_UTIL.getTestFileSystem(), TEST_UTIL.getDefaultRootDirPath(), hri, htd, wal);
+      TEST_UTIL.getTestFileSystem(), rootDir, hri, htd, wal);
     EnvironmentEdge ee = EnvironmentEdgeManager.getDelegate();
     try {
       List<Put> puts = null;
@@ -465,4 +479,125 @@ public class TestFSHLog {
     }
   }
 
+  @Test
+  public void testSyncRunnerIndexOverflow() throws IOException, NoSuchFieldException,
+      SecurityException, IllegalArgumentException, IllegalAccessException {
+    final String name = "testSyncRunnerIndexOverflow";
+    FSHLog log =
+        new FSHLog(fs, walRootDir, name, HConstants.HREGION_OLDLOGDIR_NAME, conf,
+            null, true, null, null);
+    try {
+      Field ringBufferEventHandlerField = FSHLog.class.getDeclaredField("ringBufferEventHandler");
+      ringBufferEventHandlerField.setAccessible(true);
+      FSHLog.RingBufferEventHandler ringBufferEventHandler =
+          (FSHLog.RingBufferEventHandler) ringBufferEventHandlerField.get(log);
+      Field syncRunnerIndexField =
+          FSHLog.RingBufferEventHandler.class.getDeclaredField("syncRunnerIndex");
+      syncRunnerIndexField.setAccessible(true);
+      syncRunnerIndexField.set(ringBufferEventHandler, Integer.MAX_VALUE - 1);
+      HTableDescriptor htd =
+          new HTableDescriptor(TableName.valueOf("t1")).addFamily(new HColumnDescriptor("row"));
+      HRegionInfo hri =
+          new HRegionInfo(htd.getTableName(), HConstants.EMPTY_START_ROW, HConstants.EMPTY_END_ROW);
+      final AtomicLong sequenceId1 = new AtomicLong(1);
+      for (int i = 0; i < 10; i++) {
+        addEdits(log, hri, htd, 1, sequenceId1);
+      }
+    } finally {
+      log.close();
+    }
+  }
+
+  /**
+   * Test case for https://issues.apache.org/jira/browse/HBASE-16721
+   */
+  @Test (timeout = 30000)
+  public void testUnflushedSeqIdTracking() throws IOException, InterruptedException {
+    final String name = "testSyncRunnerIndexOverflow";
+    final byte[] b = Bytes.toBytes("b");
+
+    final AtomicBoolean startHoldingForAppend = new AtomicBoolean(false);
+    final CountDownLatch holdAppend = new CountDownLatch(1);
+    final CountDownLatch flushFinished = new CountDownLatch(1);
+    final CountDownLatch putFinished = new CountDownLatch(1);
+
+    try (FSHLog log =
+        new FSHLog(fs, walRootDir, name, HConstants.HREGION_OLDLOGDIR_NAME, conf,
+            null, true, null, null)) {
+
+      log.registerWALActionsListener(new WALActionsListener.Base() {
+        @Override
+        public void visitLogEntryBeforeWrite(HTableDescriptor htd, WALKey logKey, WALEdit logEdit) {
+          if (startHoldingForAppend.get()) {
+            try {
+              holdAppend.await();
+            } catch (InterruptedException e) {
+              LOG.error(e);
+            }
+          }
+        }
+      });
+
+      // open a new region which uses this WAL
+      HTableDescriptor htd =
+          new HTableDescriptor(TableName.valueOf("t1")).addFamily(new HColumnDescriptor(b));
+      HRegionInfo hri =
+          new HRegionInfo(htd.getTableName(), HConstants.EMPTY_START_ROW, HConstants.EMPTY_END_ROW);
+
+      final HRegion region = TEST_UTIL.createLocalHRegion(hri, htd, log);
+      ExecutorService exec = Executors.newFixedThreadPool(2);
+
+      // do a regular write first because of memstore size calculation.
+      region.put(new Put(b).addColumn(b, b,b));
+
+      startHoldingForAppend.set(true);
+      exec.submit(new Runnable() {
+        @Override
+        public void run() {
+          try {
+            region.put(new Put(b).addColumn(b, b,b));
+            putFinished.countDown();
+          } catch (IOException e) {
+            LOG.error(e);
+          }
+        }
+      });
+
+      // give the put a chance to start
+      Threads.sleep(3000);
+
+      exec.submit(new Runnable() {
+        @Override
+        public void run() {
+          try {
+            Region.FlushResult flushResult = region.flush(true);
+            LOG.info("Flush result:" +  flushResult.getResult());
+            LOG.info("Flush succeeded:" +  flushResult.isFlushSucceeded());
+            flushFinished.countDown();
+          } catch (IOException e) {
+            LOG.error(e);
+          }
+        }
+      });
+
+      // give the flush a chance to start. Flush should have got the region lock, and
+      // should have been waiting on the mvcc complete after this.
+      Threads.sleep(3000);
+
+      // let the append to WAL go through now that the flush already started
+      holdAppend.countDown();
+      putFinished.await();
+      flushFinished.await();
+
+      // check whether flush went through
+      assertEquals("Region did not flush?", 1, region.getStoreFileList(new byte[][]{b}).size());
+
+      // now check the region's unflushed seqIds.
+      long seqId = log.getEarliestMemstoreSeqNum(hri.getEncodedNameAsBytes());
+      assertEquals("Found seqId for the region which is already flushed",
+          HConstants.NO_SEQNUM, seqId);
+
+      region.close();
+    }
+  }
 }

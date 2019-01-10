@@ -71,13 +71,16 @@ module Shell
   class Shell
     attr_accessor :hbase
     attr_accessor :formatter
+    attr_accessor :interactive
+    alias interactive? interactive
 
     @debug = false
     attr_accessor :debug
 
-    def initialize(hbase, formatter)
+    def initialize(hbase, formatter, interactive=true)
       self.hbase = hbase
       self.formatter = formatter
+      self.interactive = interactive
     end
 
     def hbase_admin
@@ -102,6 +105,10 @@ module Shell
     
     def hbase_quotas_admin
       @hbase_quotas_admin ||= hbase.quotas_admin(formatter)
+    end
+
+    def hbase_rsgroup_admin
+      @rsgroup_admin ||= hbase.rsgroup_admin(formatter)
     end
 
     def export_commands(where)
@@ -264,6 +271,7 @@ Shell.load_command_group(
     alter_status
     alter_async
     get_table
+    locate_region
   ],
   :aliases => {
     'describe' => ['desc']
@@ -311,6 +319,9 @@ Shell.load_command_group(
     balancer
     balance_switch
     balancer_enabled
+    normalize
+    normalizer_switch
+    normalizer_enabled
     close_region
     compact
     flush
@@ -326,6 +337,8 @@ Shell.load_command_group(
     catalogjanitor_enabled
     compact_rs
     trace
+    splitormerge_switch
+    splitormerge_enabled
   ],
   # TODO remove older hlog_roll command
   :aliases => {
@@ -363,6 +376,8 @@ Shell.load_command_group(
     delete_snapshot
     delete_all_snapshot
     list_snapshots
+    snapshot_all
+    snapshot_restore
   ]
 )
 
@@ -381,6 +396,9 @@ Shell.load_command_group(
   :commands => %w[
     set_quota
     list_quotas
+    list_quota_table_sizes
+    list_quota_violations
+    list_quota_snapshots
   ]
 )
 
@@ -396,6 +414,15 @@ Shell.load_command_group(
 )
 
 Shell.load_command_group(
+  'procedures',
+  :full_name => 'PROCEDURES MANAGEMENT',
+  :commands => %w[
+    abort_procedure
+    list_procedures
+  ]
+)
+
+Shell.load_command_group(
   'visibility labels',
   :full_name => 'VISIBILITY LABEL TOOLS',
   :comment => "NOTE: Above commands are only applicable if running with the VisibilityController coprocessor",
@@ -406,5 +433,22 @@ Shell.load_command_group(
     get_auths
     clear_auths
     set_visibility
+  ]
+)
+
+Shell.load_command_group(
+  'rsgroup',
+  :full_name => 'RSGroups',
+  :comment => "NOTE: Above commands are only applicable if running with the Groups setup",
+  :commands => %w[
+    list_rsgroups
+    get_rsgroup
+    add_rsgroup
+    remove_rsgroup
+    balance_rsgroup
+    move_rsgroup_servers
+    move_rsgroup_tables
+    get_server_rsgroup
+    get_table_rsgroup
   ]
 )

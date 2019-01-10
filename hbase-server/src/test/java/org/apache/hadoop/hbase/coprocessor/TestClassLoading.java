@@ -531,7 +531,7 @@ public class TestClassLoading {
     // to master: verify that the master is reporting the correct set of
     // loaded coprocessors.
     final String loadedMasterCoprocessorsVerify =
-        "[" + masterCoprocessor.getSimpleName() + "]";
+        "["+ masterCoprocessor.getSimpleName() + "]";
     String loadedMasterCoprocessors =
         java.util.Arrays.toString(
             TEST_UTIL.getHBaseCluster().getMaster().getMasterCoprocessors());

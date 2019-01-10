@@ -64,6 +64,7 @@ import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotFoundException;
 import org.apache.hadoop.hbase.TableStateManager;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.RegionReplicaUtil;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.coordination.BaseCoordinatedStateManager;
@@ -259,6 +260,10 @@ public class AssignmentManager extends ZooKeeperListener {
   private List<AssignmentListener> listeners = new CopyOnWriteArrayList<AssignmentListener>();
 
   private RegionStateListener regionStateListener;
+
+  public enum ServerHostRegion {
+    NOT_HOSTING_REGION, HOSTING_REGION, UNKNOWN,
+  }
 
   /**
    * Constructs a new assignment manager.
@@ -579,15 +584,15 @@ public class AssignmentManager extends ZooKeeperListener {
       Set<ServerName> queuedDeadServers = serverManager.getRequeuedDeadServers().keySet();
       if (!queuedDeadServers.isEmpty()) {
         Configuration conf = server.getConfiguration();
-        Path rootdir = FSUtils.getRootDir(conf);
-        FileSystem fs = rootdir.getFileSystem(conf);
+        Path walRootDir = FSUtils.getWALRootDir(conf);
+        FileSystem walFs = FSUtils.getWALFileSystem(conf);
         for (ServerName serverName: queuedDeadServers) {
           // In the case of a clean exit, the shutdown handler would have presplit any WALs and
           // removed empty directories.
-          Path logDir = new Path(rootdir,
+          Path walDir = new Path(walRootDir,
               DefaultWALProvider.getWALDirectoryName(serverName.toString()));
-          Path splitDir = logDir.suffix(DefaultWALProvider.SPLITTING_EXT);
-          if (fs.exists(logDir) || fs.exists(splitDir)) {
+          Path splitDir = walDir.suffix(DefaultWALProvider.SPLITTING_EXT);
+          if (walFs.exists(walDir) || walFs.exists(splitDir)) {
             LOG.debug("Found queued dead server " + serverName);
             failover = true;
             break;
@@ -833,7 +838,7 @@ public class AssignmentManager extends ZooKeeperListener {
       case RS_ZK_REGION_CLOSED:
       case RS_ZK_REGION_FAILED_OPEN:
         // Region is closed, insert into RIT and handle it
-        regionStates.updateRegionState(regionInfo, State.CLOSED, sn);
+        regionStates.setRegionStateTOCLOSED(regionInfo, sn);
         if (!replicasToClose.contains(regionInfo)) {
           invokeAssign(regionInfo);
         } else {
@@ -843,7 +848,7 @@ public class AssignmentManager extends ZooKeeperListener {
 
       case M_ZK_REGION_OFFLINE:
         // Insert in RIT and resend to the regionserver
-        regionStates.updateRegionState(rt, State.PENDING_OPEN);
+        regionStates.updateRegionState(rt, State.OFFLINE);
         final RegionState rsOffline = regionStates.getRegionState(regionInfo);
         this.executorService.submit(
           new EventHandler(server, EventType.M_MASTER_RECOVERY) {
@@ -853,7 +858,7 @@ public class AssignmentManager extends ZooKeeperListener {
               try {
                 RegionPlan plan = new RegionPlan(regionInfo, null, sn);
                 addPlan(encodedName, plan);
-                assign(rsOffline, false, false);
+                assign(rsOffline, true, false);
               } finally {
                 lock.unlock();
               }
@@ -1055,7 +1060,7 @@ public class AssignmentManager extends ZooKeeperListener {
             failedOpenTracker.remove(encodedName);
           } else {
             // Handle this the same as if it were opened and then closed.
-            regionState = regionStates.updateRegionState(rt, State.CLOSED);
+            regionState = regionStates.setRegionStateTOCLOSED(rt.getRegionName(), sn);
             if (regionState != null) {
               // When there are more than one region server a new RS is selected as the
               // destination and the same is updated in the regionplan. (HBASE-5546)
@@ -1092,10 +1097,19 @@ public class AssignmentManager extends ZooKeeperListener {
               + regionStates.getRegionState(encodedName));
 
             if (regionState != null) {
-              // Close it without updating the internal region states,
-              // so as not to create double assignments in unlucky scenarios
-              // mentioned in OpenRegionHandler#process
-              unassign(regionState.getRegion(), null, -1, null, false, sn);
+              if(regionState.isOpened() && regionState.getServerName().equals(sn)) {
+                //if this region was opened before on this rs, we don't have to unassign it. It won't cause
+                //double assign. One possible scenario of what happened is HBASE-17275
+                failedOpenTracker.remove(encodedName); // reset the count, if any
+                new OpenedRegionHandler(
+                    server, this, regionState.getRegion(), coordination, ord).process();
+                updateOpenedRegionHandlerTracker(regionState.getRegion());
+              } else {
+                // Close it without updating the internal region states,
+                // so as not to create double assignments in unlucky scenarios
+                // mentioned in OpenRegionHandler#process
+                unassign(regionState.getRegion(), null, -1, null, false, sn);
+              }
             }
             return;
           }
@@ -1572,6 +1586,7 @@ public class AssignmentManager extends ZooKeeperListener {
   /**
    * Use care with forceNewPlan. It could cause double assignment.
    */
+  @VisibleForTesting
   public void assign(HRegionInfo region,
       boolean setOfflineInZK, boolean forceNewPlan) {
     if (isDisabledorDisablingRegionInRIT(region)) {
@@ -2049,8 +2064,8 @@ public class AssignmentManager extends ZooKeeperListener {
    * @param setOfflineInZK
    * @param forceNewPlan
    */
-  private void assign(RegionState state,
-      final boolean setOfflineInZK, final boolean forceNewPlan) {
+  public void assign(RegionState state,
+      boolean setOfflineInZK, final boolean forceNewPlan) {
     long startTime = EnvironmentEdgeManager.currentTime();
     try {
       Configuration conf = server.getConfiguration();
@@ -2096,6 +2111,7 @@ public class AssignmentManager extends ZooKeeperListener {
           return;
         }
         if (setOfflineInZK && versionOfOfflineNode == -1) {
+          LOG.info("Setting node as OFFLINED in ZooKeeper for region " + region);
           // get the version of the znode after setting it to OFFLINE.
           // versionOfOfflineNode will be -1 if the znode was not set to OFFLINE
           versionOfOfflineNode = setOfflineInZooKeeper(currentState, plan.getDestination());
@@ -2128,7 +2144,7 @@ public class AssignmentManager extends ZooKeeperListener {
           }
         }
         LOG.info("Assigning " + region.getRegionNameAsString() +
-            " to " + plan.getDestination().toString());
+            " to " + plan.getDestination());
         // Transition RegionState to PENDING_OPEN
         currentState = regionStates.updateRegionState(region,
           State.PENDING_OPEN, plan.getDestination());
@@ -2265,8 +2281,13 @@ public class AssignmentManager extends ZooKeeperListener {
             // Clean out plan we failed execute and one that doesn't look like it'll
             // succeed anyways; we need a new plan!
             // Transition back to OFFLINE
+            LOG.info("Region assignment plan changed from " + plan.getDestination() + " to "
+                + newPlan.getDestination() + " server.");
             currentState = regionStates.updateRegionState(region, State.OFFLINE);
             versionOfOfflineNode = -1;
+            if (useZKForAssignment) {
+              setOfflineInZK = true;
+            }
             plan = newPlan;
           } else if(plan.getDestination().equals(newPlan.getDestination()) &&
               previousException instanceof FailedServerException) {
@@ -2299,7 +2320,32 @@ public class AssignmentManager extends ZooKeeperListener {
     LOG.debug("ALREADY_OPENED " + region.getRegionNameAsString()
       + " to " + sn);
     String encodedName = region.getEncodedName();
-    deleteNodeInStates(encodedName, "offline", sn, EventType.M_ZK_REGION_OFFLINE);
+
+    // If use ZkForAssignment, region already Opened event should not be handled,
+    // leave it to zk event. See HBase-14407.
+    if (useZKForAssignment) {
+      String node = ZKAssign.getNodeName(watcher, encodedName);
+      Stat stat = new Stat();
+      try {
+        byte[] existingBytes = ZKUtil.getDataNoWatch(watcher, node, stat);
+        if (existingBytes != null) {
+          RegionTransition rt= RegionTransition.parseFrom(existingBytes);
+          EventType et = rt.getEventType();
+          if (et.equals(EventType.RS_ZK_REGION_OPENED)) {
+            LOG.debug("ALREADY_OPENED " + region.getRegionNameAsString()
+              + " and node in " + et + " state");
+            return;
+          }
+        }
+      } catch (KeeperException ke) {
+        LOG.warn("Unexpected ZK exception getData " + node
+          + " node for the region " + encodedName, ke);
+      } catch (DeserializationException e) {
+        LOG.warn("Get RegionTransition from zk deserialization failed! ", e);
+      }
+      deleteNodeInStates(encodedName, "offline", sn, EventType.M_ZK_REGION_OFFLINE);
+    }
+
     regionStates.regionOnline(region, sn);
   }
 
@@ -2400,7 +2446,13 @@ public class AssignmentManager extends ZooKeeperListener {
     }
 
     if (newPlan) {
-      ServerName destination = balancer.randomAssignment(region, destServers);
+      ServerName destination = null;
+      try {
+        destination = balancer.randomAssignment(region, destServers);
+      } catch (IOException ex) {
+        LOG.warn("Failed to create new plan.",ex);
+        return null;
+      }
       if (destination == null) {
         LOG.warn("Can't find a destination for " + encodedName);
         return null;
@@ -2657,6 +2709,9 @@ public class AssignmentManager extends ZooKeeperListener {
       final boolean waitTillAllAssigned, final int reassigningRegions,
       final long minEndTime) throws InterruptedException {
     long deadline = minEndTime + bulkPerRegionOpenTimeGuesstimate * (reassigningRegions + 1);
+    if (deadline < 0) { // Overflow
+      deadline = Long.MAX_VALUE; // wait forever
+    }
     return waitForAssignment(regionSet, waitTillAllAssigned, deadline);
   }
 
@@ -2739,6 +2794,8 @@ public class AssignmentManager extends ZooKeeperListener {
       throw new IOException("Unable to determine a plan to assign region(s)");
     }
 
+    processBogusAssignments(bulkPlan);
+
     assign(regions.size(), servers.size(),
       "retainAssignment=true", bulkPlan);
   }
@@ -2768,6 +2825,8 @@ public class AssignmentManager extends ZooKeeperListener {
     if (bulkPlan == null) {
       throw new IOException("Unable to determine a plan to assign region(s)");
     }
+
+    processBogusAssignments(bulkPlan);
 
     processFavoredNodes(regions);
     assign(regions.size(), servers.size(),
@@ -3356,16 +3415,16 @@ public class AssignmentManager extends ZooKeeperListener {
     threadPoolExecutorService.submit(new UnAssignCallable(this, regionInfo));
   }
 
-  public boolean isCarryingMeta(ServerName serverName) {
+  public ServerHostRegion isCarryingMeta(ServerName serverName) {
     return isCarryingRegion(serverName, HRegionInfo.FIRST_META_REGIONINFO);
   }
 
-  public boolean isCarryingMetaReplica(ServerName serverName, int replicaId) {
+  public ServerHostRegion isCarryingMetaReplica(ServerName serverName, int replicaId) {
     return isCarryingRegion(serverName,
         RegionReplicaUtil.getRegionInfoForReplica(HRegionInfo.FIRST_META_REGIONINFO, replicaId));
   }
 
-  public boolean isCarryingMetaReplica(ServerName serverName, HRegionInfo metaHri) {
+  public ServerHostRegion isCarryingMetaReplica(ServerName serverName, HRegionInfo metaHri) {
     return isCarryingRegion(serverName, metaHri);
   }
 
@@ -3379,7 +3438,7 @@ public class AssignmentManager extends ZooKeeperListener {
    * processing hasn't finished yet when server shutdown occurs.
    * @return whether the serverName currently hosts the region
    */
-  private boolean isCarryingRegion(ServerName serverName, HRegionInfo hri) {
+  private ServerHostRegion isCarryingRegion(ServerName serverName, HRegionInfo hri) {
     RegionTransition rt = null;
     try {
       byte [] data = ZKAssign.getData(watcher, hri.getEncodedName());
@@ -3397,17 +3456,33 @@ public class AssignmentManager extends ZooKeeperListener {
       boolean matchZK = addressFromZK.equals(serverName);
       LOG.debug("Checking region=" + hri.getRegionNameAsString() + ", zk server=" + addressFromZK +
         " current=" + serverName + ", matches=" + matchZK);
-      return matchZK;
+      return matchZK ? ServerHostRegion.HOSTING_REGION : ServerHostRegion.NOT_HOSTING_REGION;
     }
 
     ServerName addressFromAM = regionStates.getRegionServerOfRegion(hri);
-    boolean matchAM = (addressFromAM != null &&
-      addressFromAM.equals(serverName));
-    LOG.debug("based on AM, current region=" + hri.getRegionNameAsString() +
-      " is on server=" + (addressFromAM != null ? addressFromAM : "null") +
-      " server being checked: " + serverName);
+    if (addressFromAM != null) {
+      boolean matchAM = addressFromAM.equals(serverName);
+      LOG.debug("based on AM, current region=" + hri.getRegionNameAsString() +
+        " is on server=" + (addressFromAM != null ? addressFromAM : "null") +
+        " server being checked: " + serverName);
+      return matchAM ? ServerHostRegion.HOSTING_REGION : ServerHostRegion.NOT_HOSTING_REGION;
+    }
 
-    return matchAM;
+    if (hri.isMetaRegion() && RegionReplicaUtil.isDefaultReplica(hri)) {
+      // For the Meta region (default replica), we can do one more check on MetaTableLocator
+      final ServerName serverNameInZK =
+          server.getMetaTableLocator().getMetaRegionLocation(this.server.getZooKeeper());
+      LOG.debug("Based on MetaTableLocator, the META region is on server="
+          + (serverNameInZK == null ? "null" : serverNameInZK)
+          + " server being checked: " + serverName);
+      if (serverNameInZK != null) {
+        return serverNameInZK.equals(serverName) ?
+            ServerHostRegion.HOSTING_REGION : ServerHostRegion.NOT_HOSTING_REGION;
+      }
+    }
+    // Checked everywhere, if reaching here, we are sure that the server is not
+    // carrying region.
+    return ServerHostRegion.UNKNOWN;
   }
 
   /**
@@ -3687,7 +3762,6 @@ public class AssignmentManager extends ZooKeeperListener {
         && (rs_b == null || rs_b.isOpenOrSplittingNewOnServer(sn)))) {
       return "Not in state good for split";
     }
-
     regionStates.updateRegionState(a, State.SPLITTING_NEW, sn);
     regionStates.updateRegionState(b, State.SPLITTING_NEW, sn);
     regionStates.updateRegionState(p, State.SPLITTING);
@@ -3723,9 +3797,19 @@ public class AssignmentManager extends ZooKeeperListener {
         return "Failed to record the splitting in meta";
       }
     } else if (code == TransitionCode.SPLIT_REVERTED) {
+      // Always bring the parent back online. Even if it's not offline
+      // There's no harm in making it online again.
       regionOnline(p, sn);
-      regionOffline(a);
-      regionOffline(b);
+
+      // Only offline the region if they are known to exist.
+      RegionState regionStateA = regionStates.getRegionState(a);
+      RegionState regionStateB = regionStates.getRegionState(b);
+      if (regionStateA != null) {
+        regionOffline(a);
+      }
+      if (regionStateB != null) {
+        regionOffline(b);
+      }
 
       if (getTableStateManager().isTableState(p.getTable(),
           ZooKeeperProtos.Table.State.DISABLED, ZooKeeperProtos.Table.State.DISABLING)) {
@@ -3744,7 +3828,6 @@ public class AssignmentManager extends ZooKeeperListener {
         && (rs_p == null || rs_p.isOpenOrMergingNewOnServer(sn)))) {
       return "Not in state good for merge";
     }
-
     regionStates.updateRegionState(a, State.MERGING);
     regionStates.updateRegionState(b, State.MERGING);
     regionStates.updateRegionState(p, State.MERGING_NEW, sn);
@@ -3780,18 +3863,32 @@ public class AssignmentManager extends ZooKeeperListener {
         LOG.info("Failed to record merged region " + p.getShortNameToLog());
         return "Failed to record the merging in meta";
       }
-    } else {
-      mergingRegions.remove(encodedName);
-      regionOnline(a, sn);
-      regionOnline(b, sn);
-      regionOffline(p);
-
-      if (getTableStateManager().isTableState(p.getTable(),
-          ZooKeeperProtos.Table.State.DISABLED, ZooKeeperProtos.Table.State.DISABLING)) {
-        invokeUnAssign(a);
-        invokeUnAssign(b);
-      }
     }
+    return null;
+  }
+
+  private String onRegionMergeReverted(ServerName sn, TransitionCode code,
+	      final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
+    RegionState rs_p = regionStates.getRegionState(p);
+    String encodedName = p.getEncodedName();
+    mergingRegions.remove(encodedName);
+
+    // Always bring the children back online. Even if they are not offline
+    // there's no harm in making them online again.
+    regionOnline(a, sn);
+    regionOnline(b, sn);
+
+    // Only offline the merging region if it is known to exist.
+    if (rs_p != null) {
+      regionOffline(p);
+    }
+
+    if (getTableStateManager().isTableState(p.getTable(),
+        ZooKeeperProtos.Table.State.DISABLED, ZooKeeperProtos.Table.State.DISABLING)) {
+      invokeUnAssign(a);
+      invokeUnAssign(b);
+    }
+
     return null;
   }
 
@@ -4292,9 +4389,14 @@ public class AssignmentManager extends ZooKeeperListener {
     case READY_TO_SPLIT:
       try {
         regionStateListener.onRegionSplit(hri);
+        if (!((HMaster)server).getSplitOrMergeTracker().isSplitOrMergeEnabled(
+                Admin.MasterSwitchType.SPLIT)) {
+          errorMsg = "split switch is off!";
+        }
       } catch (IOException exp) {
         errorMsg = StringUtils.stringifyException(exp);
       }
+      break;
     case SPLIT_PONR:
     case SPLIT:
     case SPLIT_REVERTED:
@@ -4310,9 +4412,13 @@ public class AssignmentManager extends ZooKeeperListener {
       }
       break;
     case READY_TO_MERGE:
+      if (!((HMaster)server).getSplitOrMergeTracker().isSplitOrMergeEnabled(
+              Admin.MasterSwitchType.MERGE)) {
+        errorMsg = "merge switch is off!";
+      }
+      break;
     case MERGE_PONR:
     case MERGED:
-    case MERGE_REVERTED:
       errorMsg = onRegionMerge(serverName, code, hri,
         HRegionInfo.convert(transition.getRegionInfo(1)),
         HRegionInfo.convert(transition.getRegionInfo(2)));
@@ -4324,6 +4430,11 @@ public class AssignmentManager extends ZooKeeperListener {
         }
       }
       break;
+    case MERGE_REVERTED:
+        errorMsg = onRegionMergeReverted(serverName, code, hri,
+                HRegionInfo.convert(transition.getRegionInfo(1)),
+                HRegionInfo.convert(transition.getRegionInfo(2)));
+      break;
 
     default:
       errorMsg = "Unexpected transition code " + code;
@@ -4333,6 +4444,16 @@ public class AssignmentManager extends ZooKeeperListener {
         + code + " by " + serverName + ": " + errorMsg);
     }
     return errorMsg;
+  }
+
+  private void processBogusAssignments(Map<ServerName, List<HRegionInfo>> bulkPlan) {
+    if (bulkPlan.containsKey(LoadBalancer.BOGUS_SERVER_NAME)) {
+      // Found no plan for some regions, put those regions in RIT
+      for (HRegionInfo hri : bulkPlan.get(LoadBalancer.BOGUS_SERVER_NAME)) {
+        regionStates.updateRegionState(hri, State.FAILED_OPEN);
+      }
+      bulkPlan.remove(LoadBalancer.BOGUS_SERVER_NAME);
+    }
   }
 
   /**

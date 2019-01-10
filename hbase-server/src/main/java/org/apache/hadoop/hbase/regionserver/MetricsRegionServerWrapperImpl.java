@@ -34,6 +34,8 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.io.hfile.BlockCache;
 import org.apache.hadoop.hbase.io.hfile.CacheConfig;
 import org.apache.hadoop.hbase.io.hfile.CacheStats;
+import org.apache.hadoop.hbase.mob.MobCacheConfig;
+import org.apache.hadoop.hbase.mob.MobFileCache;
 import org.apache.hadoop.hbase.wal.BoundedRegionGroupingProvider;
 import org.apache.hadoop.hbase.wal.DefaultWALProvider;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
@@ -52,6 +54,7 @@ class MetricsRegionServerWrapperImpl
   private final HRegionServer regionServer;
 
   private BlockCache blockCache;
+  private MobFileCache mobFileCache;
 
   private volatile long numStores = 0;
   private volatile long numWALFiles = 0;
@@ -59,6 +62,10 @@ class MetricsRegionServerWrapperImpl
   private volatile long numStoreFiles = 0;
   private volatile long memstoreSize = 0;
   private volatile long storeFileSize = 0;
+  private volatile long maxStoreFileAge = 0;
+  private volatile long minStoreFileAge = 0;
+  private volatile long avgStoreFileAge = 0;
+  private volatile long numReferenceFiles = 0;
   private volatile double requestsPerSecond = 0.0;
   private volatile long readRequestsCount = 0;
   private volatile long writeRequestsCount = 0;
@@ -69,15 +76,30 @@ class MetricsRegionServerWrapperImpl
   private volatile long totalStaticBloomSize = 0;
   private volatile long numMutationsWithoutWAL = 0;
   private volatile long dataInMemoryWithoutWAL = 0;
-  private volatile int percentFileLocal = 0;
-  private volatile int percentFileLocalSecondaryRegions = 0;
+  private volatile double percentFileLocal = 0;
+  private volatile double percentFileLocalSecondaryRegions = 0;
   private volatile long flushedCellsCount = 0;
   private volatile long compactedCellsCount = 0;
   private volatile long majorCompactedCellsCount = 0;
   private volatile long flushedCellsSize = 0;
   private volatile long compactedCellsSize = 0;
   private volatile long majorCompactedCellsSize = 0;
+  private volatile long cellsCountCompactedToMob = 0;
+  private volatile long cellsCountCompactedFromMob = 0;
+  private volatile long cellsSizeCompactedToMob = 0;
+  private volatile long cellsSizeCompactedFromMob = 0;
+  private volatile long mobFlushCount = 0;
+  private volatile long mobFlushedCellsCount = 0;
+  private volatile long mobFlushedCellsSize = 0;
+  private volatile long mobScanCellsCount = 0;
+  private volatile long mobScanCellsSize = 0;
+  private volatile long mobFileCacheAccessCount = 0;
+  private volatile long mobFileCacheMissCount = 0;
+  private volatile double mobFileCacheHitRatio = 0;
+  private volatile long mobFileCacheEvictedCount = 0;
+  private volatile long mobFileCacheCount = 0;
   private volatile long blockedRequestsCount = 0L;
+  private volatile long averageRegionSize = 0L;
 
   private CacheStats cacheStats;
   private ScheduledExecutorService executor;
@@ -87,6 +109,7 @@ class MetricsRegionServerWrapperImpl
   public MetricsRegionServerWrapperImpl(final HRegionServer regionServer) {
     this.regionServer = regionServer;
     initBlockCache();
+    initMobFileCache();
 
     this.period =
         regionServer.conf.getLong(HConstants.REGIONSERVER_METRICS_PERIOD,
@@ -115,6 +138,16 @@ class MetricsRegionServerWrapperImpl
 
     if (this.blockCache != null && this.cacheStats == null) {
       this.cacheStats = blockCache.getStats();
+    }
+  }
+
+  /**
+   * Initializes the mob file cache.
+   */
+  private synchronized void initMobFileCache() {
+    MobCacheConfig mobCacheConfig = this.regionServer.mobCacheConfig;
+    if (mobCacheConfig != null && this.mobFileCache == null) {
+      this.mobFileCache = mobCacheConfig.getMobFileCache();
     }
   }
 
@@ -246,11 +279,27 @@ class MetricsRegionServerWrapperImpl
   }
 
   @Override
+  public long getBlockCachePrimaryHitCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return this.cacheStats.getPrimaryHitCount();
+  }
+
+  @Override
   public long getBlockCacheMissCount() {
     if (this.cacheStats == null) {
       return 0;
     }
     return this.cacheStats.getMissCount();
+  }
+
+  @Override
+  public long getBlockCachePrimaryMissCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return this.cacheStats.getPrimaryMissCount();
   }
 
   @Override
@@ -262,19 +311,37 @@ class MetricsRegionServerWrapperImpl
   }
 
   @Override
+  public long getBlockCachePrimaryEvictedCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return this.cacheStats.getPrimaryEvictedCount();
+  }
+
+  @Override
   public double getBlockCacheHitPercent() {
     if (this.cacheStats == null) {
       return 0;
     }
-    return (int) (this.cacheStats.getHitRatio() * 100);
+    double ratio = this.cacheStats.getHitRatio();
+    if (Double.isNaN(ratio)) {
+      ratio = 0;
+    }
+    return (ratio * 100);
   }
 
   @Override
-  public int getBlockCacheHitCachingPercent() {
+  public double getBlockCacheHitCachingPercent() {
     if (this.cacheStats == null) {
       return 0;
     }
-    return (int) (this.cacheStats.getHitCachingRatio() * 100);
+
+    double ratio = this.cacheStats.getHitCachingRatio();
+
+    if (Double.isNaN(ratio)) {
+      ratio = 0;
+    }
+    return (ratio * 100);
   }
 
   @Override public void forceRecompute() {
@@ -302,6 +369,26 @@ class MetricsRegionServerWrapperImpl
   }
 
   @Override
+  public long getMaxStoreFileAge() {
+    return maxStoreFileAge;
+  }
+
+  @Override
+  public long getMinStoreFileAge() {
+    return minStoreFileAge;
+  }
+
+  @Override
+  public long getAvgStoreFileAge() {
+    return avgStoreFileAge;
+  }
+
+  @Override
+  public long getNumReferenceFiles() {
+    return numReferenceFiles;
+  }
+
+  @Override
   public long getMemstoreSize() {
     return memstoreSize;
   }
@@ -323,6 +410,26 @@ class MetricsRegionServerWrapperImpl
   @Override
   public long getWriteRequestsCount() {
     return writeRequestsCount;
+  }
+
+  @Override
+  public long getRpcGetRequestsCount() {
+    return regionServer.rpcServices.rpcGetRequestCount.get();
+  }
+
+  @Override
+  public long getRpcScanRequestsCount() {
+    return regionServer.rpcServices.rpcScanRequestCount.get();
+  }
+
+  @Override
+  public long getRpcMultiRequestsCount() {
+    return regionServer.rpcServices.rpcMultiRequestCount.get();
+  }
+
+  @Override
+  public long getRpcMutateRequestsCount() {
+    return regionServer.rpcServices.rpcMutateRequestCount.get();
   }
 
   @Override
@@ -361,12 +468,12 @@ class MetricsRegionServerWrapperImpl
   }
 
   @Override
-  public int getPercentFileLocal() {
+  public double getPercentFileLocal() {
     return percentFileLocal;
   }
 
   @Override
-  public int getPercentFileLocalSecondaryRegions() {
+  public double getPercentFileLocalSecondaryRegions() {
     return percentFileLocalSecondaryRegions;
   }
 
@@ -408,6 +515,76 @@ class MetricsRegionServerWrapperImpl
     return majorCompactedCellsSize;
   }
 
+  @Override
+  public long getCellsCountCompactedFromMob() {
+    return cellsCountCompactedFromMob;
+  }
+
+  @Override
+  public long getCellsCountCompactedToMob() {
+    return cellsCountCompactedToMob;
+  }
+
+  @Override
+  public long getCellsSizeCompactedFromMob() {
+    return cellsSizeCompactedFromMob;
+  }
+
+  @Override
+  public long getCellsSizeCompactedToMob() {
+    return cellsSizeCompactedToMob;
+  }
+
+  @Override
+  public long getMobFlushCount() {
+    return mobFlushCount;
+  }
+
+  @Override
+  public long getMobFlushedCellsCount() {
+    return mobFlushedCellsCount;
+  }
+
+  @Override
+  public long getMobFlushedCellsSize() {
+    return mobFlushedCellsSize;
+  }
+
+  @Override
+  public long getMobScanCellsCount() {
+    return mobScanCellsCount;
+  }
+
+  @Override
+  public long getMobScanCellsSize() {
+    return mobScanCellsSize;
+  }
+
+  @Override
+  public long getMobFileCacheAccessCount() {
+    return mobFileCacheAccessCount;
+  }
+
+  @Override
+  public long getMobFileCacheMissCount() {
+    return mobFileCacheMissCount;
+  }
+
+  @Override
+  public long getMobFileCacheCount() {
+    return mobFileCacheCount;
+  }
+
+  @Override
+  public long getMobFileCacheEvictedCount() {
+    return mobFileCacheEvictedCount;
+  }
+
+  @Override
+  public int getMobFileCacheHitPercent() {
+    return (int) (mobFileCacheHitRatio * 100);
+  }
+
   /**
    * This is the runnable that will be executed on the executor every PERIOD number of seconds
    * It will take metrics/numbers from all of the regions and use them to compute point in
@@ -420,128 +597,367 @@ class MetricsRegionServerWrapperImpl
 
     @Override
     synchronized public void run() {
-      initBlockCache();
-      cacheStats = blockCache.getStats();
+      try {
+        initBlockCache();
+        initMobFileCache();
+        cacheStats = blockCache.getStats();
 
-      HDFSBlocksDistribution hdfsBlocksDistribution =
-          new HDFSBlocksDistribution();
-      HDFSBlocksDistribution hdfsBlocksDistributionSecondaryRegions =
-          new HDFSBlocksDistribution();
+        HDFSBlocksDistribution hdfsBlocksDistribution = new HDFSBlocksDistribution();
+        HDFSBlocksDistribution hdfsBlocksDistributionSecondaryRegions =
+            new HDFSBlocksDistribution();
 
-      long tempNumStores = 0;
-      long tempNumStoreFiles = 0;
-      long tempMemstoreSize = 0;
-      long tempStoreFileSize = 0;
-      long tempReadRequestsCount = 0;
-      long tempWriteRequestsCount = 0;
-      long tempCheckAndMutateChecksFailed = 0;
-      long tempCheckAndMutateChecksPassed = 0;
-      long tempStorefileIndexSize = 0;
-      long tempTotalStaticIndexSize = 0;
-      long tempTotalStaticBloomSize = 0;
-      long tempNumMutationsWithoutWAL = 0;
-      long tempDataInMemoryWithoutWAL = 0;
-      int tempPercentFileLocal = 0;
-      int tempPercentFileLocalSecondaryRegions = 0;
-      long tempFlushedCellsCount = 0;
-      long tempCompactedCellsCount = 0;
-      long tempMajorCompactedCellsCount = 0;
-      long tempFlushedCellsSize = 0;
-      long tempCompactedCellsSize = 0;
-      long tempMajorCompactedCellsSize = 0;
-      long tempBlockedRequestsCount = 0L;
+        long tempNumStores = 0;
+        long tempNumStoreFiles = 0;
+        long tempMemstoreSize = 0;
+        long tempStoreFileSize = 0;
+        long tempMaxStoreFileAge = 0;
+        long tempNumReferenceFiles = 0;
+        long avgAgeNumerator = 0;
+        long numHFiles = 0;
+        long tempMinStoreFileAge = Long.MAX_VALUE;
+        long tempReadRequestsCount = 0;
+        long tempWriteRequestsCount = 0;
+        long tempCheckAndMutateChecksFailed = 0;
+        long tempCheckAndMutateChecksPassed = 0;
+        long tempStorefileIndexSize = 0;
+        long tempTotalStaticIndexSize = 0;
+        long tempTotalStaticBloomSize = 0;
+        long tempNumMutationsWithoutWAL = 0;
+        long tempDataInMemoryWithoutWAL = 0;
+        double tempPercentFileLocal = 0;
+        double tempPercentFileLocalSecondaryRegions = 0;
+        long tempFlushedCellsCount = 0;
+        long tempCompactedCellsCount = 0;
+        long tempMajorCompactedCellsCount = 0;
+        long tempCellsCountCompactedToMob = 0;
+        long tempCellsCountCompactedFromMob = 0;
+        long tempCellsSizeCompactedToMob = 0;
+        long tempCellsSizeCompactedFromMob = 0;
+        long tempMobFlushCount = 0;
+        long tempMobFlushedCellsCount = 0;
+        long tempMobFlushedCellsSize = 0;
+        long tempMobScanCellsCount = 0;
+        long tempMobScanCellsSize = 0;
+        long tempFlushedCellsSize = 0;
+        long tempCompactedCellsSize = 0;
+        long tempMajorCompactedCellsSize = 0;
+        long tempBlockedRequestsCount = 0L;
 
-      for (Region r : regionServer.getOnlineRegionsLocalContext()) {
-        tempNumMutationsWithoutWAL += r.getNumMutationsWithoutWAL();
-        tempDataInMemoryWithoutWAL += r.getDataInMemoryWithoutWAL();
-        tempReadRequestsCount += r.getReadRequestsCount();
-        tempWriteRequestsCount += r.getWriteRequestsCount();
-        tempCheckAndMutateChecksFailed += r.getCheckAndMutateChecksFailed();
-        tempCheckAndMutateChecksPassed += r.getCheckAndMutateChecksPassed();
-        tempBlockedRequestsCount += r.getBlockedRequestsCount();
-        List<Store> storeList = r.getStores();
-        tempNumStores += storeList.size();
-        for (Store store : storeList) {
-          tempNumStoreFiles += store.getStorefilesCount();
-          tempMemstoreSize += store.getMemStoreSize();
-          tempStoreFileSize += store.getStorefilesSize();
-          tempStorefileIndexSize += store.getStorefilesIndexSize();
-          tempTotalStaticBloomSize += store.getTotalStaticBloomSize();
-          tempTotalStaticIndexSize += store.getTotalStaticIndexSize();
-          tempFlushedCellsCount += store.getFlushedCellsCount();
-          tempCompactedCellsCount += store.getCompactedCellsCount();
-          tempMajorCompactedCellsCount += store.getMajorCompactedCellsCount();
-          tempFlushedCellsSize += store.getFlushedCellsSize();
-          tempCompactedCellsSize += store.getCompactedCellsSize();
-          tempMajorCompactedCellsSize += store.getMajorCompactedCellsSize();
+        int regionCount = 0;
+        for (Region r : regionServer.getOnlineRegionsLocalContext()) {
+          tempNumMutationsWithoutWAL += r.getNumMutationsWithoutWAL();
+          tempDataInMemoryWithoutWAL += r.getDataInMemoryWithoutWAL();
+          tempReadRequestsCount += r.getReadRequestsCount();
+          tempWriteRequestsCount += r.getWriteRequestsCount();
+          tempCheckAndMutateChecksFailed += r.getCheckAndMutateChecksFailed();
+          tempCheckAndMutateChecksPassed += r.getCheckAndMutateChecksPassed();
+          tempBlockedRequestsCount += r.getBlockedRequestsCount();
+          List<Store> storeList = r.getStores();
+          tempNumStores += storeList.size();
+          for (Store store : storeList) {
+            tempNumStoreFiles += store.getStorefilesCount();
+            tempMemstoreSize += store.getMemStoreSize();
+            tempStoreFileSize += store.getStorefilesSize();
+
+            long storeMaxStoreFileAge = store.getMaxStoreFileAge();
+            tempMaxStoreFileAge = (storeMaxStoreFileAge > tempMaxStoreFileAge) ?
+              storeMaxStoreFileAge : tempMaxStoreFileAge;
+
+            long storeMinStoreFileAge = store.getMinStoreFileAge();
+            tempMinStoreFileAge = (storeMinStoreFileAge < tempMinStoreFileAge) ?
+              storeMinStoreFileAge : tempMinStoreFileAge;
+
+            long storeHFiles = store.getNumHFiles();
+            avgAgeNumerator += store.getAvgStoreFileAge() * storeHFiles;
+            numHFiles += storeHFiles;
+            tempNumReferenceFiles += store.getNumReferenceFiles();
+
+            tempStorefileIndexSize += store.getStorefilesIndexSize();
+            tempTotalStaticBloomSize += store.getTotalStaticBloomSize();
+            tempTotalStaticIndexSize += store.getTotalStaticIndexSize();
+            tempFlushedCellsCount += store.getFlushedCellsCount();
+            tempCompactedCellsCount += store.getCompactedCellsCount();
+            tempMajorCompactedCellsCount += store.getMajorCompactedCellsCount();
+            tempFlushedCellsSize += store.getFlushedCellsSize();
+            tempCompactedCellsSize += store.getCompactedCellsSize();
+            tempMajorCompactedCellsSize += store.getMajorCompactedCellsSize();
+            if (store instanceof HMobStore) {
+              HMobStore mobStore = (HMobStore) store;
+              tempCellsCountCompactedToMob += mobStore.getCellsCountCompactedToMob();
+              tempCellsCountCompactedFromMob += mobStore.getCellsCountCompactedFromMob();
+              tempCellsSizeCompactedToMob += mobStore.getCellsSizeCompactedToMob();
+              tempCellsSizeCompactedFromMob += mobStore.getCellsSizeCompactedFromMob();
+              tempMobFlushCount += mobStore.getMobFlushCount();
+              tempMobFlushedCellsCount += mobStore.getMobFlushedCellsCount();
+              tempMobFlushedCellsSize += mobStore.getMobFlushedCellsSize();
+              tempMobScanCellsCount += mobStore.getMobScanCellsCount();
+              tempMobScanCellsSize += mobStore.getMobScanCellsSize();
+            }
+          }
+
+          HDFSBlocksDistribution distro = r.getHDFSBlocksDistribution();
+          hdfsBlocksDistribution.add(distro);
+          if (r.getRegionInfo().getReplicaId() != HRegionInfo.DEFAULT_REPLICA_ID) {
+            hdfsBlocksDistributionSecondaryRegions.add(distro);
+          }
+          regionCount++;
         }
 
-        HDFSBlocksDistribution distro = r.getHDFSBlocksDistribution();
-        hdfsBlocksDistribution.add(distro);
-        if (r.getRegionInfo().getReplicaId() != HRegionInfo.DEFAULT_REPLICA_ID) {
-          hdfsBlocksDistributionSecondaryRegions.add(distro);
+        float localityIndex =
+            hdfsBlocksDistribution
+                .getBlockLocalityIndex(regionServer.getServerName().getHostname());
+        tempPercentFileLocal = Double.isNaN(tempBlockedRequestsCount) ? 0 : (localityIndex * 100);
+
+        float localityIndexSecondaryRegions =
+            hdfsBlocksDistributionSecondaryRegions.getBlockLocalityIndex(regionServer
+                .getServerName().getHostname());
+        tempPercentFileLocalSecondaryRegions = Double
+            .isNaN(localityIndexSecondaryRegions) ? 0 : (localityIndexSecondaryRegions * 100);
+
+        // Compute the number of requests per second
+        long currentTime = EnvironmentEdgeManager.currentTime();
+
+        // assume that it took PERIOD seconds to start the executor.
+        // this is a guess but it's a pretty good one.
+        if (lastRan == 0) {
+          lastRan = currentTime - period;
         }
-      }
 
-      float localityIndex = hdfsBlocksDistribution.getBlockLocalityIndex(
-          regionServer.getServerName().getHostname());
-      tempPercentFileLocal = (int) (localityIndex * 100);
+        // If we've time traveled keep the last requests per second.
+        if ((currentTime - lastRan) > 0) {
+          long currentRequestCount = getTotalRequestCount();
+          requestsPerSecond =
+              (currentRequestCount - lastRequestCount) / ((currentTime - lastRan) / 1000.0);
+          lastRequestCount = currentRequestCount;
+        }
+        lastRan = currentTime;
 
-      float localityIndexSecondaryRegions = hdfsBlocksDistributionSecondaryRegions
-          .getBlockLocalityIndex(regionServer.getServerName().getHostname());
-      tempPercentFileLocalSecondaryRegions = (int) (localityIndexSecondaryRegions * 100);
-
-      //Compute the number of requests per second
-      long currentTime = EnvironmentEdgeManager.currentTime();
-
-      // assume that it took PERIOD seconds to start the executor.
-      // this is a guess but it's a pretty good one.
-      if (lastRan == 0) {
-        lastRan = currentTime - period;
-      }
-
-
-      //If we've time traveled keep the last requests per second.
-      if ((currentTime - lastRan) > 0) {
-        long currentRequestCount = getTotalRequestCount();
-        requestsPerSecond = (currentRequestCount - lastRequestCount) /
-            ((currentTime - lastRan) / 1000.0);
-        lastRequestCount = currentRequestCount;
-      }
-      lastRan = currentTime;
-
-      numWALFiles = DefaultWALProvider.getNumLogFiles(regionServer.walFactory) +
+        numWALFiles = DefaultWALProvider.getNumLogFiles(regionServer.walFactory) +
           BoundedRegionGroupingProvider.getNumLogFiles(regionServer.walFactory);
-      walFileSize = DefaultWALProvider.getLogFileSize(regionServer.walFactory) +
+        walFileSize = DefaultWALProvider.getLogFileSize(regionServer.walFactory) +
           BoundedRegionGroupingProvider.getLogFileSize(regionServer.walFactory);
-      //Copy over computed values so that no thread sees half computed values.
-      numStores = tempNumStores;
-      numStoreFiles = tempNumStoreFiles;
-      memstoreSize = tempMemstoreSize;
-      storeFileSize = tempStoreFileSize;
-      readRequestsCount = tempReadRequestsCount;
-      writeRequestsCount = tempWriteRequestsCount;
-      checkAndMutateChecksFailed = tempCheckAndMutateChecksFailed;
-      checkAndMutateChecksPassed = tempCheckAndMutateChecksPassed;
-      storefileIndexSize = tempStorefileIndexSize;
-      totalStaticIndexSize = tempTotalStaticIndexSize;
-      totalStaticBloomSize = tempTotalStaticBloomSize;
-      numMutationsWithoutWAL = tempNumMutationsWithoutWAL;
-      dataInMemoryWithoutWAL = tempDataInMemoryWithoutWAL;
-      percentFileLocal = tempPercentFileLocal;
-      percentFileLocalSecondaryRegions = tempPercentFileLocalSecondaryRegions;
-      flushedCellsCount = tempFlushedCellsCount;
-      compactedCellsCount = tempCompactedCellsCount;
-      majorCompactedCellsCount = tempMajorCompactedCellsCount;
-      flushedCellsSize = tempFlushedCellsSize;
-      compactedCellsSize = tempCompactedCellsSize;
-      majorCompactedCellsSize = tempMajorCompactedCellsSize;
-      blockedRequestsCount = tempBlockedRequestsCount;
+        // Copy over computed values so that no thread sees half computed values.
+        numStores = tempNumStores;
+        numStoreFiles = tempNumStoreFiles;
+        memstoreSize = tempMemstoreSize;
+        storeFileSize = tempStoreFileSize;
+        maxStoreFileAge = tempMaxStoreFileAge;
+        if (regionCount > 0) {
+          averageRegionSize = (memstoreSize + storeFileSize) / regionCount;
+        }
+        if (tempMinStoreFileAge != Long.MAX_VALUE) {
+          minStoreFileAge = tempMinStoreFileAge;
+        }
+
+        if (numHFiles != 0) {
+          avgStoreFileAge = avgAgeNumerator / numHFiles;
+        }
+
+        numReferenceFiles= tempNumReferenceFiles;
+        readRequestsCount = tempReadRequestsCount;
+        writeRequestsCount = tempWriteRequestsCount;
+        checkAndMutateChecksFailed = tempCheckAndMutateChecksFailed;
+        checkAndMutateChecksPassed = tempCheckAndMutateChecksPassed;
+        storefileIndexSize = tempStorefileIndexSize;
+        totalStaticIndexSize = tempTotalStaticIndexSize;
+        totalStaticBloomSize = tempTotalStaticBloomSize;
+        numMutationsWithoutWAL = tempNumMutationsWithoutWAL;
+        dataInMemoryWithoutWAL = tempDataInMemoryWithoutWAL;
+        percentFileLocal = tempPercentFileLocal;
+        percentFileLocalSecondaryRegions = tempPercentFileLocalSecondaryRegions;
+        flushedCellsCount = tempFlushedCellsCount;
+        compactedCellsCount = tempCompactedCellsCount;
+        majorCompactedCellsCount = tempMajorCompactedCellsCount;
+        flushedCellsSize = tempFlushedCellsSize;
+        compactedCellsSize = tempCompactedCellsSize;
+        majorCompactedCellsSize = tempMajorCompactedCellsSize;
+        cellsCountCompactedToMob = tempCellsCountCompactedToMob;
+        cellsCountCompactedFromMob = tempCellsCountCompactedFromMob;
+        cellsSizeCompactedToMob = tempCellsSizeCompactedToMob;
+        cellsSizeCompactedFromMob = tempCellsSizeCompactedFromMob;
+        mobFlushCount = tempMobFlushCount;
+        mobFlushedCellsCount = tempMobFlushedCellsCount;
+        mobFlushedCellsSize = tempMobFlushedCellsSize;
+        mobScanCellsCount = tempMobScanCellsCount;
+        mobScanCellsSize = tempMobScanCellsSize;
+        mobFileCacheAccessCount = mobFileCache.getAccessCount();
+        mobFileCacheMissCount = mobFileCache.getMissCount();
+        mobFileCacheHitRatio = mobFileCache.getHitRatio();
+        mobFileCacheEvictedCount = mobFileCache.getEvictedFileCount();
+        mobFileCacheCount = mobFileCache.getCacheSize();
+        blockedRequestsCount = tempBlockedRequestsCount;
+      } catch (Throwable e) {
+        LOG.warn("Caught exception! Will suppress and retry.", e);
+      }
     }
   }
 
   @Override
   public long getBlockedRequestsCount() {
     return blockedRequestsCount;
+  }
+
+  @Override
+  public long getAverageRegionSize() {
+    return averageRegionSize;
+  }
+
+  public long getDataMissCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getDataMissCount();
+  }
+
+  @Override
+  public long getLeafIndexMissCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getLeafIndexMissCount();
+  }
+
+  @Override
+  public long getBloomChunkMissCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getBloomChunkMissCount();
+  }
+
+  @Override
+  public long getMetaMissCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getMetaMissCount();
+  }
+
+  @Override
+  public long getRootIndexMissCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getRootIndexMissCount();
+  }
+
+  @Override
+  public long getIntermediateIndexMissCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getIntermediateIndexMissCount();
+  }
+
+  @Override
+  public long getFileInfoMissCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getFileInfoMissCount();
+  }
+
+  @Override
+  public long getGeneralBloomMetaMissCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getGeneralBloomMetaMissCount();
+  }
+
+  @Override
+  public long getDeleteFamilyBloomMissCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getDeleteFamilyBloomMissCount();
+  }
+
+  @Override
+  public long getTrailerMissCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getTrailerMissCount();
+  }
+
+  @Override
+  public long getDataHitCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getDataHitCount();
+  }
+
+  @Override
+  public long getLeafIndexHitCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getLeafIndexHitCount();
+  }
+
+  @Override
+  public long getBloomChunkHitCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getBloomChunkHitCount();
+  }
+
+  @Override
+  public long getMetaHitCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getMetaHitCount();
+  }
+
+  @Override
+  public long getRootIndexHitCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getRootIndexHitCount();
+  }
+
+  @Override
+  public long getIntermediateIndexHitCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getIntermediateIndexHitCount();
+  }
+
+  @Override
+  public long getFileInfoHitCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getFileInfoHitCount();
+  }
+
+  @Override
+  public long getGeneralBloomMetaHitCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getGeneralBloomMetaHitCount();
+  }
+
+  @Override
+  public long getDeleteFamilyBloomHitCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getDeleteFamilyBloomHitCount();
+  }
+
+  @Override
+  public long getTrailerHitCount() {
+    if (this.cacheStats == null) {
+      return 0;
+    }
+    return cacheStats.getTrailerHitCount();
   }
 }

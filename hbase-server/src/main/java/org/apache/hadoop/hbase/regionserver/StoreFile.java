@@ -18,6 +18,12 @@
  */
 package org.apache.hadoop.hbase.regionserver;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Function;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Ordering;
+
 import java.io.DataInput;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -112,6 +118,9 @@ public class StoreFile {
   /** Key for timestamp of earliest-put in metadata*/
   public static final byte[] EARLIEST_PUT_TS = Bytes.toBytes("EARLIEST_PUT_TS");
 
+  /** Key for the number of mob cells in metadata*/
+  public static final byte[] MOB_CELLS_COUNT = Bytes.toBytes("MOB_CELLS_COUNT");
+
   private final StoreFileInfo fileInfo;
   private final FileSystem fs;
 
@@ -125,6 +134,10 @@ public class StoreFile {
   // max of the MemstoreTS in the KV's in this store
   // Set when we obtain a Reader.
   private long maxMemstoreTS = -1;
+
+  CacheConfig getCacheConf() {
+    return cacheConf;
+  }
 
   public long getMaxMemstoreTS() {
     return maxMemstoreTS;
@@ -161,6 +174,13 @@ public class StoreFile {
    * necessarily correspond to the Bloom filter type present in the HFile.
    */
   private final BloomType cfBloomType;
+
+  /**
+   * Key for skipping resetting sequence id in metadata.
+   * For bulk loaded hfiles, the scanner resets the cell seqId with the latest one,
+   * if this metadata is set as true, the reset is skipped.
+   */
+  public static final byte[] SKIP_RESET_SEQ_ID = Bytes.toBytes("SKIP_RESET_SEQ_ID");
 
   /**
    * Constructor, loads a reader and it's indices, etc. May allocate a
@@ -225,6 +245,13 @@ public class StoreFile {
   }
 
   /**
+   * Clone a StoreFile for opening private reader.
+   */
+  public StoreFile cloneForReader() {
+    return new StoreFile(this);
+  }
+
+  /**
    * @return the StoreFile object associated to this StoreFile.
    *         null if the StoreFile is not a reference.
    */
@@ -252,6 +279,13 @@ public class StoreFile {
    */
   public boolean isReference() {
     return this.fileInfo.isReference();
+  }
+
+  /**
+   * @return True if this is HFile.
+   */
+  public boolean isHFile() {
+    return this.fileInfo.isHFile(this.fileInfo.getPath());
   }
 
   /**
@@ -334,7 +368,7 @@ public class StoreFile {
    * is turned off, fall back to BULKLOAD_TIME_KEY.
    * @return true if this storefile was created by bulk load.
    */
-  boolean isBulkLoadResult() {
+  public boolean isBulkLoadResult() {
     boolean bulkLoadedHFile = false;
     String fileName = this.getPath().getName();
     int startPos = fileName.indexOf("SeqId_");
@@ -405,6 +439,17 @@ public class StoreFile {
           this.sequenceid += 1;
         }
       }
+      // SKIP_RESET_SEQ_ID only works in bulk loaded file.
+      // In mob compaction, the hfile where the cells contain the path of a new mob file is bulk
+      // loaded to hbase, these cells have the same seqIds with the old ones. We do not want
+      // to reset new seqIds for them since this might make a mess of the visibility of cells that
+      // have the same row key but different seqIds.
+      boolean skipResetSeqId = isSkipResetSeqId(metadataMap.get(SKIP_RESET_SEQ_ID));
+      if (skipResetSeqId) {
+        // increase the seqId when it is a bulk loaded file from mob compaction.
+        this.sequenceid += 1;
+      }
+      this.reader.setSkipResetSeqId(skipResetSeqId);
       this.reader.setBulkLoaded(true);
     }
     this.reader.setSequenceID(this.sequenceid);
@@ -472,7 +517,9 @@ public class StoreFile {
         this.reader = open();
       } catch (IOException e) {
         try {
-          this.closeReader(true);
+          boolean evictOnClose =
+              cacheConf != null? cacheConf.shouldEvictOnClose(): true; 
+          this.closeReader(evictOnClose);
         } catch (IOException ee) {
         }
         throw e;
@@ -507,7 +554,9 @@ public class StoreFile {
    * @throws IOException
    */
   public void deleteReader() throws IOException {
-    closeReader(true);
+    boolean evictOnClose =
+        cacheConf != null? cacheConf.shouldEvictOnClose(): true; 
+    closeReader(evictOnClose);
     this.fs.delete(getPath(), true);
   }
 
@@ -532,6 +581,18 @@ public class StoreFile {
     sb.append(", majorCompaction=").append(isMajorCompaction());
 
     return sb.toString();
+  }
+
+  /**
+   * Gets whether to skip resetting the sequence id for cells.
+   * @param skipResetSeqId The byte array of boolean.
+   * @return Whether to skip resetting the sequence id.
+   */
+  private boolean isSkipResetSeqId(byte[] skipResetSeqId) {
+    if (skipResetSeqId != null && skipResetSeqId.length == 1) {
+      return Bytes.toBoolean(skipResetSeqId);
+    }
+    return false;
   }
 
   public static class WriterBuilder {
@@ -627,7 +688,7 @@ public class StoreFile {
       }
 
       if (!fs.exists(dir)) {
-        fs.mkdirs(dir);
+        HRegionFileSystem.mkdirs(fs, conf, dir);
       }
 
       if (filePath == null) {
@@ -664,6 +725,13 @@ public class StoreFile {
         null :
         getReader().timeRangeTracker.getMinimumTimestamp();
   }
+
+  public Long getMaximumTimestamp() {
+    return (getReader().timeRangeTracker == null) ?
+        null :
+        getReader().timeRangeTracker.getMaximumTimestamp();
+  }
+
 
   /**
    * Gets the approximate mid-point of this file that is optimal for use in splitting it.
@@ -796,6 +864,22 @@ public class StoreFile {
       writer.appendFileInfo(MAX_SEQ_ID_KEY, Bytes.toBytes(maxSequenceId));
       writer.appendFileInfo(MAJOR_COMPACTION_KEY,
           Bytes.toBytes(majorCompaction));
+      appendTrackedTimestampsToMetadata();
+    }
+
+    /**
+     * Writes meta data.
+     * Call before {@link #close()} since its written as meta data to this file.
+     * @param maxSequenceId Maximum sequence id.
+     * @param majorCompaction True if this file is product of a major compaction
+     * @param mobCellsCount The number of mob cells.
+     * @throws IOException problem writing to FS
+     */
+    public void appendMetadata(final long maxSequenceId, final boolean majorCompaction,
+        final long mobCellsCount) throws IOException {
+      writer.appendFileInfo(MAX_SEQ_ID_KEY, Bytes.toBytes(maxSequenceId));
+      writer.appendFileInfo(MAJOR_COMPACTION_KEY, Bytes.toBytes(majorCompaction));
+      writer.appendFileInfo(MOB_CELLS_COUNT, Bytes.toBytes(mobCellsCount));
       appendTrackedTimestampsToMetadata();
     }
 
@@ -935,7 +1019,7 @@ public class StoreFile {
       return this.writer.getPath();
     }
 
-    boolean hasGeneralBloom() {
+    public boolean hasGeneralBloom() {
       return this.generalBloomFilterWriter != null;
     }
 
@@ -1031,6 +1115,7 @@ public class StoreFile {
     private byte[] lastBloomKey;
     private long deleteFamilyCnt = -1;
     private boolean bulkLoadResult = false;
+    private boolean skipResetSeqId = true;
 
     public Reader(FileSystem fs, Path path, CacheConfig cacheConf, Configuration conf)
         throws IOException {
@@ -1042,6 +1127,13 @@ public class StoreFile {
         CacheConfig cacheConf, Configuration conf) throws IOException {
       reader = HFile.createReader(fs, path, in, size, cacheConf, conf);
       bloomFilterType = BloomType.NONE;
+    }
+
+    public void setReplicaStoreFile(boolean isPrimaryReplicaStoreFile) {
+      reader.setPrimaryReplicaReader(isPrimaryReplicaStoreFile);
+    }
+    public boolean isPrimaryReplicaReader() {
+      return reader.isPrimaryReplicaReader();
     }
 
     /**
@@ -1539,6 +1631,14 @@ public class StoreFile {
     public long getMaxTimestamp() {
       return timeRangeTracker == null ? Long.MAX_VALUE : timeRangeTracker.getMaximumTimestamp();
     }
+
+    boolean isSkipResetSeqId() {
+      return skipResetSeqId;
+    }
+
+    void setSkipResetSeqId(boolean skipResetSeqId) {
+      this.skipResetSeqId = skipResetSeqId;
+    }
   }
 
   /**
@@ -1559,6 +1659,19 @@ public class StoreFile {
           Ordering.natural().onResultOf(new GetFileSize()).reverse(),
           Ordering.natural().onResultOf(new GetBulkTime()),
           Ordering.natural().onResultOf(new GetPathName())
+      ));
+
+    /**
+     * Comparator for time-aware compaction. SeqId is still the first
+     *   ordering criterion to maintain MVCC.
+     */
+    public static final Comparator<StoreFile> SEQ_ID_MAX_TIMESTAMP =
+      Ordering.compound(ImmutableList.of(
+        Ordering.natural().onResultOf(new GetSeqId()),
+        Ordering.natural().onResultOf(new GetMaxTimestamp()),
+        Ordering.natural().onResultOf(new GetFileSize()).reverse(),
+        Ordering.natural().onResultOf(new GetBulkTime()),
+        Ordering.natural().onResultOf(new GetPathName())
       ));
 
     private static class GetSeqId implements Function<StoreFile, Long> {
@@ -1587,6 +1700,13 @@ public class StoreFile {
       @Override
       public String apply(StoreFile sf) {
         return sf.getPath().getName();
+      }
+    }
+
+    private static class GetMaxTimestamp implements Function<StoreFile, Long> {
+      @Override
+      public Long apply(StoreFile sf) {
+        return sf.getMaximumTimestamp() == null? (Long)Long.MAX_VALUE : sf.getMaximumTimestamp();
       }
     }
   }

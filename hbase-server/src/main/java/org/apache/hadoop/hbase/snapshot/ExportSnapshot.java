@@ -51,12 +51,16 @@ import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.io.FileLink;
 import org.apache.hadoop.hbase.io.HFileLink;
+import org.apache.hadoop.hbase.io.hfile.HFile;
+import org.apache.hadoop.hbase.mapreduce.JobUtil;
 import org.apache.hadoop.hbase.io.WALLink;
 import org.apache.hadoop.hbase.mapreduce.TableMapReduceUtil;
+import org.apache.hadoop.hbase.mob.MobUtils;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.SnapshotDescription;
 import org.apache.hadoop.hbase.protobuf.generated.SnapshotProtos.SnapshotFileInfo;
 import org.apache.hadoop.hbase.protobuf.generated.SnapshotProtos.SnapshotRegionManifest;
 import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.HFileArchiveUtil;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.IOUtils;
@@ -271,7 +275,7 @@ public class ExportSnapshot extends Configured implements Tool {
         context.getCounter(Counter.BYTES_EXPECTED).increment(inputStat.getLen());
 
         // Ensure that the output folder is there and copy the file
-        outputFs.mkdirs(outputPath.getParent());
+        createOutputPath(outputPath.getParent());
         FSDataOutputStream out = outputFs.create(outputPath, true);
         try {
           copyData(context, inputStat.getPath(), in, outputPath, out, inputStat.getLen());
@@ -285,6 +289,28 @@ public class ExportSnapshot extends Configured implements Tool {
         }
       } finally {
         in.close();
+      }
+    }
+
+    /**
+     * Create the output folder and optionally set ownership.
+     */
+    private void createOutputPath(final Path path) throws IOException {
+      if (filesUser == null && filesGroup == null) {
+        outputFs.mkdirs(path);
+      } else {
+        Path parent = path.getParent();
+        if (!outputFs.exists(parent) && !parent.isRoot()) {
+          createOutputPath(parent);
+        }
+        outputFs.mkdirs(path);
+        if (filesUser != null || filesGroup != null) {
+          // override the owner when non-null user/group is specified
+          outputFs.setOwner(path, filesUser, filesGroup);
+        }
+        if (filesMode > 0) {
+          outputFs.setPermission(path, new FsPermission(filesMode));
+        }
       }
     }
 
@@ -409,7 +435,7 @@ public class ExportSnapshot extends Configured implements Tool {
         switch (fileInfo.getType()) {
           case HFILE:
             Path inputPath = new Path(fileInfo.getHfile());
-            link = HFileLink.buildFromHFileLinkPattern(conf, inputPath);
+            link = getFileLink(inputPath, conf);
             break;
           case WAL:
             String serverName = fileInfo.getWalServer();
@@ -435,7 +461,7 @@ public class ExportSnapshot extends Configured implements Tool {
         switch (fileInfo.getType()) {
           case HFILE:
             Path inputPath = new Path(fileInfo.getHfile());
-            link = HFileLink.buildFromHFileLinkPattern(conf, inputPath);
+            link = getFileLink(inputPath, conf);
             break;
           case WAL:
             link = new WALLink(inputRoot, fileInfo.getWalServer(), fileInfo.getWalName());
@@ -452,6 +478,16 @@ public class ExportSnapshot extends Configured implements Tool {
         LOG.error("Unable to get the status for source file=" + fileInfo.toString(), e);
         throw e;
       }
+    }
+
+    private FileLink getFileLink(Path path, Configuration conf) throws IOException{
+      String regionName = HFileLink.getReferencedRegionName(path.getName());
+      TableName tableName = HFileLink.getReferencedTableName(path.getName());
+      if(MobUtils.getMobRegionInfo(tableName).getEncodedName().equals(regionName)) {
+        return HFileLink.buildFromHFileLinkPattern(MobUtils.getQualifiedMobRootDir(conf),
+                HFileArchiveUtil.getArchivePath(conf), path);
+      }
+      return HFileLink.buildFromHFileLinkPattern(inputRoot, inputArchive, path);
     }
 
     private FileChecksum getFileChecksum(final FileSystem fs, final Path path) {
@@ -794,6 +830,37 @@ public class ExportSnapshot extends Configured implements Tool {
   }
 
   /**
+   * Set path ownership.
+   */
+  private void setOwner(final FileSystem fs, final Path path, final String user,
+      final String group, final boolean recursive) throws IOException {
+    if (user != null || group != null) {
+      if (recursive && fs.isDirectory(path)) {
+        for (FileStatus child : fs.listStatus(path)) {
+          setOwner(fs, child.getPath(), user, group, recursive);
+        }
+      }
+      fs.setOwner(path, user, group);
+    }
+  }
+
+  /**
+   * Set path permission.
+   */
+  private void setPermission(final FileSystem fs, final Path path, final short filesMode,
+      final boolean recursive) throws IOException {
+    if (filesMode > 0) {
+      FsPermission perm = new FsPermission(filesMode);
+      if (recursive && fs.isDirectory(path)) {
+        for (FileStatus child : fs.listStatus(path)) {
+          setPermission(fs, child.getPath(), filesMode, recursive);
+        }
+      }
+      fs.setPermission(path, perm);
+    }
+  }
+
+  /**
    * Execute the export snapshot by copying the snapshot metadata, hfiles and wals.
    * @return 0 on success, and != 0 upon failure.
    */
@@ -916,6 +983,12 @@ public class ExportSnapshot extends Configured implements Tool {
     try {
       LOG.info("Copy Snapshot Manifest");
       FileUtil.copy(inputFs, snapshotDir, outputFs, initialOutputSnapshotDir, false, false, conf);
+      if (filesUser != null || filesGroup != null) {
+        setOwner(outputFs, snapshotTmpDir, filesUser, filesGroup, true);
+      }
+      if (filesMode > 0) {
+        setPermission(outputFs, snapshotTmpDir, (short)filesMode, true);
+      }
     } catch (IOException e) {
       throw new ExportSnapshotException("Failed to copy the snapshot directory: from=" +
         snapshotDir + " to=" + initialOutputSnapshotDir, e);

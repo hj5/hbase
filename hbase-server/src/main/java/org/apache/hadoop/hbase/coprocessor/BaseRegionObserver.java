@@ -21,6 +21,7 @@ package org.apache.hadoop.hbase.coprocessor;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.NavigableSet;
 
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
@@ -483,8 +484,25 @@ public abstract class BaseRegionObserver implements RegionObserver {
   }
 
   @Override
+  public void preCommitStoreFile(final ObserverContext<RegionCoprocessorEnvironment> ctx,
+      final byte[] family, final List<Pair<Path, Path>> pairs) throws IOException {
+  }
+
+  @Override
+  public void postCommitStoreFile(final ObserverContext<RegionCoprocessorEnvironment> ctx,
+      final byte[] family, Path srcPath, Path dstPath) throws IOException {
+  }
+
+  @Override
   public boolean postBulkLoadHFile(ObserverContext<RegionCoprocessorEnvironment> ctx,
-    List<Pair<byte[], String>> familyPaths, boolean hasLoaded) throws IOException {
+    List<Pair<byte[], String>> stagingFamilyPaths, Map<byte[], List<Path>> finalPaths,
+    boolean hasLoaded) throws IOException {
+    return postBulkLoadHFile(ctx, stagingFamilyPaths, hasLoaded);
+  }
+
+  @Override
+  public boolean postBulkLoadHFile(ObserverContext<RegionCoprocessorEnvironment> ctx,
+    List<Pair<byte[], String>> stagingFamilyPaths, boolean hasLoaded) throws IOException {
     return hasLoaded;
   }
 

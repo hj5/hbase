@@ -25,15 +25,14 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HTableDescriptor;
+import org.apache.hadoop.hbase.ProcedureInfo;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotEnabledException;
 import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
-import org.apache.hadoop.hbase.procedure2.ProcedureResult;
 import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProcedureProtos.DisableTableState;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
-
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Assert;
@@ -119,10 +118,11 @@ public class TestDisableTableProcedure {
         procExec.getEnvironment(), tableName, false));
     // Wait the completion
     ProcedureTestingUtility.waitProcedure(procExec, procId2);
-    ProcedureResult result = procExec.getResult(procId2);
+    ProcedureInfo result = procExec.getResult(procId2);
     assertTrue(result.isFailed());
-    LOG.debug("Disable failed with exception: " + result.getException());
-    assertTrue(result.getException().getCause() instanceof TableNotEnabledException);
+    LOG.debug("Disable failed with exception: " + result.getExceptionFullMessage());
+    assertTrue(
+      ProcedureTestingUtility.getExceptionCause(result) instanceof TableNotEnabledException);
 
     // Disable the table - expect failure from ProcedurePrepareLatch
     try {
@@ -160,9 +160,8 @@ public class TestDisableTableProcedure {
     ProcedureTestingUtility.setKillAndToggleBeforeStoreUpdate(procExec, true);
 
     // Start the Disable procedure && kill the executor
-    long procId =
-        procExec.submitProcedure(new DisableTableProcedure(procExec.getEnvironment(), tableName,
-            false));
+    long procId = procExec.submitProcedure(
+      new DisableTableProcedure(procExec.getEnvironment(), tableName, false));
 
     // Restart the executor and execute the step twice
     int numberOfSteps = DisableTableState.values().length;

@@ -19,7 +19,7 @@
 package org.apache.hadoop.hbase.regionserver;
 
 import java.io.IOException;
-import java.util.LinkedList;
+import java.util.LinkedHashSet;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
@@ -34,13 +34,13 @@ import org.apache.hadoop.hbase.util.ClassSize;
  */
 @InterfaceAudience.Private
 public class MultiVersionConsistencyControl {
-  private static final long NO_WRITE_NUMBER = 0;
+  static final long NO_WRITE_NUMBER = 0;
   private volatile long memstoreRead = 0;
   private final Object readWaiters = new Object();
 
   // This is the pending queue of writes.
-  private final LinkedList<WriteEntry> writeQueue =
-      new LinkedList<WriteEntry>();
+  private final LinkedHashSet<WriteEntry> writeQueue =
+      new LinkedHashSet<WriteEntry>();
 
   /**
    * Default constructor. Initializes the memstoreRead/Write points to 0.
@@ -79,10 +79,11 @@ public class MultiVersionConsistencyControl {
     // current MVCC completes. Theoretically the bump only needs to be 2 * the number of handlers
     // because each handler could increment sequence num twice and max concurrent in-flight
     // transactions is the number of RPC handlers.
-    // we can't use Long.MAX_VALUE because we still want to maintain the ordering when multiple
-    // changes touch same row key
+    // We can't use Long.MAX_VALUE because we still want to maintain the ordering when multiple
+    // changes touch same row key.
     // If for any reason, the bumped value isn't reset due to failure situations, we'll reset
-    // curSeqNum to NO_WRITE_NUMBER in order NOT to advance memstore read point at all
+    // curSeqNum to NO_WRITE_NUMBER in order NOT to advance memstore read point at all.
+    // St.Ack 20150901 Where is the reset to NO_WRITE_NUMBER done?
     return sequenceId.incrementAndGet() + 1000000000;
   }
 
@@ -100,7 +101,14 @@ public class MultiVersionConsistencyControl {
    * @return WriteEntry a WriteEntry instance with the passed in curSeqNum
    */
   public WriteEntry beginMemstoreInsertWithSeqNum(long curSeqNum) {
+    return beginMemstoreInsertWithSeqNum(curSeqNum, false);
+  }
+
+  private WriteEntry beginMemstoreInsertWithSeqNum(long curSeqNum, boolean complete) {
     WriteEntry e = new WriteEntry(curSeqNum);
+    if (complete) {
+      e.markCompleted();
+    }
     synchronized (writeQueue) {
       writeQueue.add(e);
       return e;
@@ -125,6 +133,23 @@ public class MultiVersionConsistencyControl {
       e.setWriteNumber(NO_WRITE_NUMBER);
     }
     waitForPreviousTransactionsComplete(e);
+  }
+
+  /**
+   * Cancel a write insert that failed.
+   * Removes the write entry without advancing read point or without interfering with write
+   * entries queued behind us. It is like #advanceMemstore(WriteEntry) only this method
+   * will move the read point to the sequence id that is in WriteEntry even if it ridiculous (see
+   * the trick in HRegion where we call {@link #getPreAssignedWriteNumber(AtomicLong)} just to mark
+   * it as for special handling).
+   * @param writeEntry Failed attempt at write. Does cleanup.
+   */
+  public void cancelMemstoreInsert(WriteEntry writeEntry) {
+    // I'm not clear on how this voodoo all works but setting write number to -1 does NOT advance
+    // readpoint and gets my little writeEntry completed and removed from queue of outstanding
+    // events which seems right.  St.Ack 20150901.
+    writeEntry.setWriteNumber(NO_WRITE_NUMBER);
+    advanceMemstore(writeEntry);
   }
 
   /**
@@ -153,11 +178,11 @@ public class MultiVersionConsistencyControl {
       e.markCompleted();
 
       while (!writeQueue.isEmpty()) {
-        WriteEntry queueFirst = writeQueue.getFirst();
+        WriteEntry queueFirst = writeQueue.iterator().next();
         if (queueFirst.isCompleted()) {
           // Using Max because Edit complete in WAL sync order not arriving order
           nextReadValue = Math.max(nextReadValue, queueFirst.getWriteNumber());
-          writeQueue.removeFirst();
+          writeQueue.remove(queueFirst);
         } else {
           break;
         }
@@ -199,25 +224,29 @@ public class MultiVersionConsistencyControl {
    * Wait for all previous MVCC transactions complete
    */
   public void waitForPreviousTransactionsComplete() {
-    WriteEntry w = beginMemstoreInsert();
+    WriteEntry w = beginMemstoreInsertWithSeqNum(NO_WRITE_NUMBER, true);
     waitForPreviousTransactionsComplete(w);
   }
 
   public void waitForPreviousTransactionsComplete(WriteEntry waitedEntry) {
     boolean interrupted = false;
     WriteEntry w = waitedEntry;
+    w.markCompleted();
 
     try {
       WriteEntry firstEntry = null;
       do {
         synchronized (writeQueue) {
-          // writeQueue won't be empty at this point, the following is just a safety check
           if (writeQueue.isEmpty()) {
             break;
           }
-          firstEntry = writeQueue.getFirst();
+          firstEntry = writeQueue.iterator().next();
           if (firstEntry == w) {
             // all previous in-flight transactions are done
+            break;
+          }
+          // WriteEntry already was removed from the queue by another handler
+          if (!writeQueue.contains(w)) {
             break;
           }
           try {
@@ -231,9 +260,7 @@ public class MultiVersionConsistencyControl {
         }
       } while (firstEntry != null);
     } finally {
-      if (w != null) {
-        advanceMemstore(w);
-      }
+      advanceMemstore(w);
     }
     if (interrupted) {
       Thread.currentThread().interrupt();

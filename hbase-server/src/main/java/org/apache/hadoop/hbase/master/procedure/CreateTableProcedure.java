@@ -88,6 +88,7 @@ public class CreateTableProcedure
     this.hTableDescriptor = hTableDescriptor;
     this.newRegions = newRegions != null ? Lists.newArrayList(newRegions) : null;
     this.user = env.getRequestUser().getUGI();
+    this.setOwner(this.user.getShortUserName());
 
     // used for compatibility with clients without procedures
     // they need a sync TableExistsException
@@ -98,6 +99,8 @@ public class CreateTableProcedure
   protected Flow executeFromState(final MasterProcedureEnv env, final CreateTableState state) {
     if (LOG.isTraceEnabled()) {
       LOG.trace(this + " execute state=" + state);
+    } else {
+      LOG.info(this + " execute state=" + state);
     }
     try {
       switch (state) {
@@ -229,8 +232,7 @@ public class CreateTableProcedure
     sb.append(getClass().getSimpleName());
     sb.append(" (table=");
     sb.append(getTableName());
-    sb.append(") user=");
-    sb.append(user);
+    sb.append(")");
   }
 
   @Override
@@ -269,7 +271,7 @@ public class CreateTableProcedure
 
   @Override
   protected boolean acquireLock(final MasterProcedureEnv env) {
-    if (!env.isInitialized() && !getTableName().isSystemTable()) {
+    if (!env.isNamespaceManagerInitialized() && !getTableName().isSystemTable()) {
       return false;
     }
     return env.getProcedureQueue().tryAcquireTableWrite(getTableName(), "create table");

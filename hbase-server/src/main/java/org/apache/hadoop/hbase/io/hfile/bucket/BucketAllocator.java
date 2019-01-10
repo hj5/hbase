@@ -22,10 +22,15 @@ package org.apache.hadoop.hbase.io.hfile.bucket;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.List;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
+import com.google.common.collect.MinMaxPriorityQueue;
+import org.apache.commons.collections.map.LinkedMap;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
@@ -43,7 +48,7 @@ import com.google.common.primitives.Ints;
  * when evicting. It manages an array of buckets, each bucket is associated with
  * a size and caches elements up to this size. For a completely empty bucket, this
  * size could be re-specified dynamically.
- * 
+ *
  * This class is not thread safe.
  */
 @InterfaceAudience.Private
@@ -173,22 +178,22 @@ public final class BucketAllocator {
   final class BucketSizeInfo {
     // Free bucket means it has space to allocate a block;
     // Completely free bucket means it has no block.
-    private List<Bucket> bucketList, freeBuckets, completelyFreeBuckets;
+    private LinkedMap bucketList, freeBuckets, completelyFreeBuckets;
     private int sizeIndex;
 
     BucketSizeInfo(int sizeIndex) {
-      bucketList = new ArrayList<Bucket>();
-      freeBuckets = new ArrayList<Bucket>();
-      completelyFreeBuckets = new ArrayList<Bucket>();
+      bucketList = new LinkedMap();
+      freeBuckets = new LinkedMap();
+      completelyFreeBuckets = new LinkedMap();
       this.sizeIndex = sizeIndex;
     }
 
-    public void instantiateBucket(Bucket b) {
+    public synchronized void instantiateBucket(Bucket b) {
       assert b.isUninstantiated() || b.isCompletelyFree();
       b.reconfigure(sizeIndex, bucketSizes, bucketCapacity);
-      bucketList.add(b);
-      freeBuckets.add(b);
-      completelyFreeBuckets.add(b);
+      bucketList.put(b, b);
+      freeBuckets.put(b, b);
+      completelyFreeBuckets.put(b, b);
     }
 
     public int sizeIndex() {
@@ -201,8 +206,10 @@ public final class BucketAllocator {
      */
     public long allocateBlock() {
       Bucket b = null;
-      if (freeBuckets.size() > 0) // Use up an existing one first...
-        b = freeBuckets.get(freeBuckets.size() - 1);
+      if (freeBuckets.size() > 0) {
+        // Use up an existing one first...
+        b = (Bucket) freeBuckets.lastKey();
+      }
       if (b == null) {
         b = grabGlobalCompletelyFreeBucket();
         if (b != null) instantiateBucket(b);
@@ -227,13 +234,13 @@ public final class BucketAllocator {
       }
 
       if (completelyFreeBuckets.size() > 0) {
-        b = completelyFreeBuckets.get(0);
+        b = (Bucket) completelyFreeBuckets.firstKey();
         removeBucket(b);
       }
       return b;
     }
 
-    private void removeBucket(Bucket b) {
+    private synchronized void removeBucket(Bucket b) {
       assert b.isCompletelyFree();
       bucketList.remove(b);
       freeBuckets.remove(b);
@@ -241,17 +248,18 @@ public final class BucketAllocator {
     }
 
     public void freeBlock(Bucket b, long offset) {
-      assert bucketList.contains(b);
+      assert bucketList.containsKey(b);
       // else we shouldn't have anything to free...
-      assert (!completelyFreeBuckets.contains(b));
+      assert (!completelyFreeBuckets.containsKey(b));
       b.free(offset);
-      if (!freeBuckets.contains(b)) freeBuckets.add(b);
-      if (b.isCompletelyFree()) completelyFreeBuckets.add(b);
+      if (!freeBuckets.containsKey(b)) freeBuckets.put(b, b);
+      if (b.isCompletelyFree()) completelyFreeBuckets.put(b, b);
     }
 
-    public IndexStatistics statistics() {
+    public synchronized IndexStatistics statistics() {
       long free = 0, used = 0;
-      for (Bucket b : bucketList) {
+      for (Object obj : bucketList.keySet()) {
+        Bucket b = (Bucket) obj;
         free += b.freeCount();
         used += b.usedCount();
       }
@@ -552,4 +560,45 @@ public final class BucketAllocator {
     return sz;
   }
 
+  public int getBucketIndex(long offset) {
+    return (int) (offset / bucketCapacity);
+  }
+
+  /**
+   * Returns a set of indices of the buckets that are least filled
+   * excluding the offsets, we also the fully free buckets for the
+   * BucketSizes where everything is empty and they only have one
+   * completely free bucket as a reserved
+   *
+   * @param excludedBuckets the buckets that need to be excluded due to
+   *                        currently being in used
+   * @param bucketCount     max Number of buckets to return
+   * @return set of bucket indices which could be used for eviction
+   */
+  public Set<Integer> getLeastFilledBuckets(Set<Integer> excludedBuckets,
+                                            int bucketCount) {
+    Queue<Integer> queue = MinMaxPriorityQueue.<Integer>orderedBy(
+        new Comparator<Integer>() {
+          @Override
+          public int compare(Integer left, Integer right) {
+            // We will always get instantiated buckets
+            return Float.compare(
+                ((float) buckets[left].usedCount) / buckets[left].itemCount,
+                ((float) buckets[right].usedCount) / buckets[right].itemCount);
+          }
+        }).maximumSize(bucketCount).create();
+
+    for (int i = 0; i < buckets.length; i ++ ) {
+      if (!excludedBuckets.contains(i) && !buckets[i].isUninstantiated() &&
+          // Avoid the buckets that are the only buckets for a sizeIndex
+          bucketSizeInfos[buckets[i].sizeIndex()].bucketList.size() != 1) {
+        queue.add(i);
+      }
+    }
+
+    Set<Integer> result = new HashSet<>(bucketCount);
+    result.addAll(queue);
+
+    return result;
+  }
 }

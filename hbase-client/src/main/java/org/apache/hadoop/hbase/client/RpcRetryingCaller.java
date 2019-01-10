@@ -63,21 +63,23 @@ public class RpcRetryingCaller<T> {
 
   private final long pause;
   private final int retries;
+  private final int rpcTimeout;// timeout for each rpc request
   private final AtomicBoolean cancelled = new AtomicBoolean(false);
   private final RetryingCallerInterceptor interceptor;
   private final RetryingCallerInterceptorContext context;
 
   public RpcRetryingCaller(long pause, int retries, int startLogErrorsCnt) {
-    this(pause, retries, RetryingCallerInterceptorFactory.NO_OP_INTERCEPTOR, startLogErrorsCnt);
+    this(pause, retries, RetryingCallerInterceptorFactory.NO_OP_INTERCEPTOR, startLogErrorsCnt, 0);
   }
 
   public RpcRetryingCaller(long pause, int retries,
-      RetryingCallerInterceptor interceptor, int startLogErrorsCnt) {
+      RetryingCallerInterceptor interceptor, int startLogErrorsCnt, int rpcTimeout) {
     this.pause = pause;
     this.retries = retries;
     this.interceptor = interceptor;
     context = interceptor.createEmptyContext();
     this.startLogErrorsCnt = startLogErrorsCnt;
+    this.rpcTimeout = rpcTimeout;
   }
 
   private int getRemainingTime(int callTimeout) {
@@ -95,6 +97,14 @@ public class RpcRetryingCaller<T> {
       }
       return remainingTime;
     }
+  }
+
+  private int getTimeout(int callTimeout){
+    int timeout = getRemainingTime(callTimeout);
+    if (timeout <= 0 || rpcTimeout > 0 && rpcTimeout < timeout){
+      timeout = rpcTimeout;
+    }
+    return timeout;
   }
 
   public void cancel(){
@@ -123,21 +133,22 @@ public class RpcRetryingCaller<T> {
       try {
         callable.prepare(tries != 0); // if called with false, check table status on ZK
         interceptor.intercept(context.prepare(callable, tries));
-        return callable.call(getRemainingTime(callTimeout));
+        return callable.call(getTimeout(callTimeout));
       } catch (PreemptiveFastFailException e) {
         throw e;
       } catch (Throwable t) {
         ExceptionUtil.rethrowIfInterrupt(t);
-        if (tries > startLogErrorsCnt) {
-          LOG.info("Call exception, tries=" + tries + ", retries=" + retries + ", started=" +
-              (EnvironmentEdgeManager.currentTime() - this.globalStartTime) + " ms ago, "
-              + "cancelled=" + cancelled.get() + ", msg="
-              + callable.getExceptionMessageAdditionalDetail());
-        }
 
         // translateException throws exception when should not retry: i.e. when request is bad.
         interceptor.handleFailure(context, t);
         t = translateException(t);
+        if (tries > startLogErrorsCnt) {
+          LOG.info("Call exception, tries=" + tries + ", retries=" + retries + ", started=" +
+              (EnvironmentEdgeManager.currentTime() - this.globalStartTime) + " ms ago, "
+              + "cancelled=" + cancelled.get() + ", msg="
+              + t.getMessage() + " " + callable.getExceptionMessageAdditionalDetail());
+        }
+
         callable.throwable(t, retries != 1);
         RetriesExhaustedException.ThrowableWithExtraContext qt =
             new RetriesExhaustedException.ThrowableWithExtraContext(t,
@@ -155,7 +166,7 @@ public class RpcRetryingCaller<T> {
         long duration = singleCallDuration(expectedSleep);
         if (duration > callTimeout) {
           String msg = "callTimeout=" + callTimeout + ", callDuration=" + duration +
-              ": " + callable.getExceptionMessageAdditionalDetail();
+              ": " + t.getMessage() + " " + callable.getExceptionMessageAdditionalDetail();
           throw (SocketTimeoutException)(new SocketTimeoutException(msg).initCause(t));
         }
       } finally {

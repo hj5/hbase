@@ -40,6 +40,7 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.UnknownScannerException;
 import org.apache.hadoop.hbase.client.metrics.ScanMetrics;
+import org.apache.hadoop.hbase.exceptions.ScannerResetException;
 import org.apache.hadoop.hbase.ipc.PayloadCarryingRpcController;
 import org.apache.hadoop.hbase.ipc.RpcControllerFactory;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
@@ -69,6 +70,7 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
   protected long scannerId = -1L;
   protected boolean instantiated = false;
   protected boolean closed = false;
+  protected boolean renew = false;
   private Scan scan;
   private int caching = 1;
   protected final ClusterConnection cConnection;
@@ -190,6 +192,13 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
     if (Thread.interrupted()) {
       throw new InterruptedIOException();
     }
+
+    if (controller == null) {
+      controller = controllerFactory.newController();
+      controller.setPriority(getTableName());
+      controller.setCallTimeout(callTimeout);
+    }
+
     if (closed) {
       if (scannerId != -1) {
         close();
@@ -204,11 +213,8 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
         setHeartbeatMessage(false);
         try {
           incRPCcallsMetrics();
-          request = RequestConverter.buildScanRequest(scannerId, caching, false, nextCallSeq);
+          request = RequestConverter.buildScanRequest(scannerId, caching, false, nextCallSeq, renew);
           ScanResponse response = null;
-          controller = controllerFactory.newController();
-          controller.setPriority(getTableName());
-          controller.setCallTimeout(callTimeout);
           try {
             response = getStub().scan(controller, request);
             // Client and RS maintain a nextCallSeq number during the scan. Every next() call
@@ -264,14 +270,19 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
           if (e instanceof RemoteException) {
             ioe = RemoteExceptionHandler.decodeRemoteException((RemoteException)e);
           }
-          if (logScannerActivity && (ioe instanceof UnknownScannerException)) {
-            try {
-              HRegionLocation location =
-                getConnection().relocateRegion(getTableName(), scan.getStartRow());
-              LOG.info("Scanner=" + scannerId
-                + " expired, current region location is " + location.toString());
-            } catch (Throwable t) {
-              LOG.info("Failed to relocate region", t);
+          if (logScannerActivity) {
+            if (ioe instanceof UnknownScannerException) {
+              try {
+                HRegionLocation location =
+                  getConnection().relocateRegion(getTableName(), scan.getStartRow());
+                LOG.info("Scanner=" + scannerId
+                  + " expired, current region location is " + location.toString());
+              } catch (Throwable t) {
+                LOG.info("Failed to relocate region", t);
+              }
+            } else if (ioe instanceof ScannerResetException) {
+              LOG.info("Scanner=" + scannerId + " has received an exception, and the server "
+                  + "asked us to reset the scanner state.", ioe);
             }
           }
           // The below convertion of exceptions into DoNotRetryExceptions is a little strange.
@@ -352,7 +363,7 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
       ScanRequest request =
         RequestConverter.buildScanRequest(this.scannerId, 0, true);
       try {
-        getStub().scan(null, request);
+        getStub().scan(controller, request);
       } catch (ServiceException se) {
         throw ProtobufUtil.getRemoteException(se);
       }
@@ -369,7 +380,7 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
         getLocation().getRegionInfo().getRegionName(),
         this.scan, 0, false);
     try {
-      ScanResponse response = getStub().scan(null, request);
+      ScanResponse response = getStub().scan(controller, request);
       long id = response.getScannerId();
       if (logScannerActivity) {
         LOG.info("Open scanner=" + id + " for scan=" + scan.toString()
@@ -390,6 +401,15 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
    */
   public void setClose() {
     this.closed = true;
+  }
+
+  /**
+   * Indicate whether we make a call only to renew the lease, but without affected the scanner in
+   * any other way.
+   * @param val true if only the lease should be renewed
+   */
+  public void setRenew(boolean val) {
+    this.renew = val;
   }
 
   /**

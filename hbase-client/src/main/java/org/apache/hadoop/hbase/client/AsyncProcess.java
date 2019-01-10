@@ -52,6 +52,7 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.backoff.ServerStatistics;
 import org.apache.hadoop.hbase.client.coprocessor.Batch;
+import org.apache.hadoop.hbase.exceptions.ClientExceptionsUtil;
 import org.apache.hadoop.hbase.ipc.RpcControllerFactory;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
@@ -110,6 +111,12 @@ class AsyncProcess {
   public static final String START_LOG_ERRORS_AFTER_COUNT_KEY =
       "hbase.client.start.log.errors.counter";
   public static final int DEFAULT_START_LOG_ERRORS_AFTER_COUNT = 9;
+
+  private final int thresholdToLogUndoneTaskDetails;
+  private static final String THRESHOLD_TO_LOG_UNDONE_TASK_DETAILS =
+      "hbase.client.threshold.log.details";
+  private static final int DEFAULT_THRESHOLD_TO_LOG_UNDONE_TASK_DETAILS = 10;
+  private final int THRESHOLD_TO_LOG_REGION_DETAILS = 2;
 
   /**
    * The context used to wait for results from one submit call.
@@ -299,6 +306,9 @@ class AsyncProcess {
 
     this.rpcCallerFactory = rpcCaller;
     this.rpcFactory = rpcFactory;
+    this.thresholdToLogUndoneTaskDetails =
+        conf.getInt(THRESHOLD_TO_LOG_UNDONE_TASK_DETAILS,
+            DEFAULT_THRESHOLD_TO_LOG_UNDONE_TASK_DETAILS);
   }
 
   /**
@@ -352,7 +362,7 @@ class AsyncProcess {
     List<Integer> locationErrorRows = null;
     do {
       // Wait until there is at least one slot for a new task.
-      waitForMaximumCurrentTasks(maxTotalConcurrentTasks - 1);
+      waitForMaximumCurrentTasks(maxTotalConcurrentTasks - 1, tableName.getNameAsString());
 
       // Remember the previous decisions about regions or region servers we put in the
       //  final multi.
@@ -870,6 +880,9 @@ class AsyncProcess {
             }
             unknownReplicaActions.add(action);
           } else {
+            if (LOG.isInfoEnabled()) {
+              LOG.info("Failed to find location: " + loc + " for replica: " + action.getReplicaId() + " and action: " + action.getAction());
+            }
             // TODO: relies on primary location always being fetched
             manageLocationError(action, null);
           }
@@ -915,6 +928,9 @@ class AsyncProcess {
         loc = locs.getRegionLocation(replicaId);
       }
       if (loc == null || loc.getServerName() == null) {
+        if (LOG.isInfoEnabled()) {
+          LOG.info("Failed to find location: " + loc + " for replica: " + replicaId + " and action: " + action.getAction());
+        }
         manageLocationError(action, null);
         return null;
       }
@@ -924,10 +940,13 @@ class AsyncProcess {
     private void manageLocationError(Action<Row> action, Exception ex) {
       String msg = "Cannot get replica " + action.getReplicaId()
           + " location for " + action.getAction();
-      LOG.error(msg);
       if (ex == null) {
+        LOG.error(msg);
         ex = new IOException(msg);
+      } else {
+        LOG.error(msg, ex);
       }
+      LOG.error(msg, ex);
       manageError(action.getOriginalIndex(), action.getAction(),
           Retry.NO_LOCATION_PROBLEM, ex, null);
     }
@@ -978,15 +997,20 @@ class AsyncProcess {
           } else {
             try {
               pool.submit(runnable);
-            } catch (RejectedExecutionException ree) {
-              // This should never happen. But as the pool is provided by the end user, let's secure
-              //  this a little.
+            } catch (Throwable t) {
+              if (t instanceof RejectedExecutionException) {
+                // This should never happen. But as the pool is provided by the end user,
+               // let's secure this a little.
+               LOG.warn("#" + id + ", the task was rejected by the pool. This is unexpected." +
+                  " Server is " + server.getServerName(), t);
+              } else {
+                // see #HBASE-14359 for more details
+                LOG.warn("Caught unexpected exception/error: ", t);
+              }
               decTaskCounters(multiAction.getRegions(), server);
-              LOG.warn("#" + id + ", the task was rejected by the pool. This is unexpected." +
-                  " Server is " + server.getServerName(), ree);
-              // We're likely to fail again, but this will increment the attempt counter, so it will
-              //  finish.
-              receiveGlobalFailure(multiAction, server, numAttempt, ree);
+              // We're likely to fail again, but this will increment the attempt counter,
+             // so it will finish.
+              receiveGlobalFailure(multiAction, server, numAttempt, t);
             }
           }
         }
@@ -1238,6 +1262,7 @@ class AsyncProcess {
           // Failure: retry if it's make sense else update the errors lists
           if (result == null || result instanceof Throwable) {
             Row row = sentAction.getAction();
+            throwable = ClientExceptionsUtil.findException(result);
             // Register corresponding failures once per server/once per region.
             if (!regionFailureRegistered) {
               regionFailureRegistered = true;
@@ -1297,8 +1322,14 @@ class AsyncProcess {
           errorsByServer.reportServerError(server);
           canRetry = errorsByServer.canRetryMore(numAttempt);
         }
-        connection.updateCachedLocations(
-            tableName, region, actions.get(0).getAction().getRow(), throwable, server);
+        if (null == tableName) {
+          // For multi-actions, we don't have a table name, but we want to make sure to clear the
+          // cache in case there were location-related exceptions
+          connection.clearCaches(server);
+        } else {
+          connection.updateCachedLocations(
+              tableName, region, actions.get(0).getAction().getRow(), throwable, server);
+        }
         failureCount += actions.size();
 
         for (Action<Row> action : actions) {
@@ -1569,7 +1600,7 @@ class AsyncProcess {
         synchronized (actionsInProgress) {
           if (actionsInProgress.get() == 0) break;
           if (!hasWait) {
-            actionsInProgress.wait(100);
+            actionsInProgress.wait(10);
           } else {
             long waitMicroSecond = Math.min(100000L, (cutoff - now * 1000L));
             TimeUnit.MICROSECONDS.timedWait(actionsInProgress, waitMicroSecond);
@@ -1630,32 +1661,64 @@ class AsyncProcess {
   @VisibleForTesting
   /** Waits until all outstanding tasks are done. Used in tests. */
   void waitUntilDone() throws InterruptedIOException {
-    waitForMaximumCurrentTasks(0);
+    waitForMaximumCurrentTasks(0, null);
   }
 
   /** Wait until the async does not have more than max tasks in progress. */
-  private void waitForMaximumCurrentTasks(int max) throws InterruptedIOException {
+  private void waitForMaximumCurrentTasks(int max, String tableName)
+      throws InterruptedIOException {
+    waitForMaximumCurrentTasks(max, tasksInProgress, id, tableName);
+  }
+
+  // Break out this method so testable
+  @VisibleForTesting
+  void waitForMaximumCurrentTasks(int max, final AtomicLong tasksInProgress, final long id,
+      String tableName) throws InterruptedIOException {
     long lastLog = EnvironmentEdgeManager.currentTime();
     long currentInProgress, oldInProgress = Long.MAX_VALUE;
-    while ((currentInProgress = this.tasksInProgress.get()) > max) {
+    while ((currentInProgress = tasksInProgress.get()) > max) {
       if (oldInProgress != currentInProgress) { // Wait for in progress to change.
         long now = EnvironmentEdgeManager.currentTime();
         if (now > lastLog + 10000) {
           lastLog = now;
           LOG.info("#" + id + ", waiting for some tasks to finish. Expected max="
-              + max + ", tasksInProgress=" + currentInProgress);
+              + max + ", tasksInProgress=" + currentInProgress +
+              " hasError=" + hasError() + tableName == null ? "" : ", tableName=" + tableName);
+          if (currentInProgress <= thresholdToLogUndoneTaskDetails) {
+            logDetailsOfUndoneTasks(currentInProgress);
+          }
         }
       }
       oldInProgress = currentInProgress;
       try {
-        synchronized (this.tasksInProgress) {
-          if (tasksInProgress.get() != oldInProgress) break;
-          this.tasksInProgress.wait(100);
+        synchronized (tasksInProgress) {
+          if (tasksInProgress.get() == oldInProgress) {
+            tasksInProgress.wait(10);
+          }
         }
       } catch (InterruptedException e) {
         throw new InterruptedIOException("#" + id + ", interrupted." +
             " currentNumberOfTask=" + currentInProgress);
       }
+    }
+  }
+
+  private void logDetailsOfUndoneTasks(long taskInProgress) {
+    ArrayList<ServerName> servers = new ArrayList<ServerName>();
+    for (Map.Entry<ServerName, AtomicInteger> entry : taskCounterPerServer.entrySet()) {
+      if (entry.getValue().get() > 0) {
+        servers.add(entry.getKey());
+      }
+    }
+    LOG.info("Left over " + taskInProgress + " task(s) are processed on server(s): " + servers);
+    if (taskInProgress <= THRESHOLD_TO_LOG_REGION_DETAILS) {
+      ArrayList<String> regions = new ArrayList<String>();
+      for (Map.Entry<byte[], AtomicInteger> entry : taskCounterPerRegion.entrySet()) {
+        if (entry.getValue().get() > 0) {
+          regions.add(Bytes.toString(entry.getKey()));
+        }
+      }
+      LOG.info("Regions against which left over task(s) are processed: " + regions);
     }
   }
 
@@ -1674,12 +1737,13 @@ class AsyncProcess {
    * failed operations themselves.
    * @param failedRows an optional list into which the rows that failed since the last time
    *        {@link #waitForAllPreviousOpsAndReset(List)} was called, or AP was created, are saved.
+   * @param tableName name of the table
    * @return all the errors since the last time {@link #waitForAllPreviousOpsAndReset(List)}
    *          was called, or AP was created.
    */
   public RetriesExhaustedWithDetailsException waitForAllPreviousOpsAndReset(
-      List<Row> failedRows) throws InterruptedIOException {
-    waitForMaximumCurrentTasks(0);
+      List<Row> failedRows, String tableName) throws InterruptedIOException {
+    waitForMaximumCurrentTasks(0, tableName);
     if (!globalErrors.hasErrors()) {
       return null;
     }

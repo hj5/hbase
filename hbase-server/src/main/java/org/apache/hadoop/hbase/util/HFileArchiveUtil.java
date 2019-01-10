@@ -64,10 +64,22 @@ public class HFileArchiveUtil {
                                          HRegionInfo region,
                                          Path tabledir,
       byte[] family) throws IOException {
-    TableName tableName =
-        FSUtils.getTableName(tabledir);
+    return getStoreArchivePath(conf, region, family);
+  }
+
+  /**
+   * Gets the directory to archive a store directory.
+   * @param conf {@link Configuration} to read for the archive directory name.
+   * @param region parent region information under which the store currently lives
+   * @param family name of the family in the store
+   * @return {@link Path} to the directory to archive the given store or <tt>null</tt> if it should
+   *         not be archived
+   */
+  public static Path getStoreArchivePath(Configuration conf,
+                                         HRegionInfo region,
+      byte[] family) throws IOException {
     Path rootDir = FSUtils.getRootDir(conf);
-    Path tableArchiveDir = getTableArchivePath(rootDir, tableName);
+    Path tableArchiveDir = getTableArchivePath(rootDir, region.getTable());
     return HStore.getStoreHomedir(tableArchiveDir, region, family);
   }
 
@@ -154,5 +166,21 @@ public class HFileArchiveUtil {
    */
   private static Path getArchivePath(final Path rootdir) {
     return new Path(rootdir, HConstants.HFILE_ARCHIVE_DIRECTORY);
+  }
+  
+  /*
+   * @return table name given archive file path
+   */
+  public static TableName getTableName(Path archivePath) {
+    Path p = archivePath;
+    String tbl = null;
+    // namespace is the 4th parent of file
+    for (int i = 0; i < 5; i++) {
+      if (p == null) return null;
+      if (i == 3) tbl = p.getName();
+      p = p.getParent();
+    }
+    if (p == null) return null;
+    return TableName.valueOf(p.getName(), tbl);
   }
 }

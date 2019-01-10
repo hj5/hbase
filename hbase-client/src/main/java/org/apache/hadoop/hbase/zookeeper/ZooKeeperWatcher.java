@@ -32,9 +32,12 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Abortable;
+import org.apache.hadoop.hbase.AuthUtil;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.ZooKeeperConnectionException;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.security.Superusers;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
@@ -70,7 +73,7 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
   private String quorum;
 
   // zookeeper connection
-  private RecoverableZooKeeper recoverableZooKeeper;
+  private final RecoverableZooKeeper recoverableZooKeeper;
 
   // abortable in case of zk failure
   protected Abortable abortable;
@@ -111,12 +114,18 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
   public String splitLogZNode;
   // znode containing the state of the load balancer
   public String balancerZNode;
+  // znode containing the state of region normalizer
+  private String regionNormalizerZNode;
+  // znode containing the state of all switches, currently there are split and merge child node.
+  private String switchZNode;
   // znode containing the lock for the tables
   public String tableLockZNode;
   // znode containing the state of recovering regions
   public String recoveringRegionsZNode;
   // znode containing namespace descriptors
   public static String namespaceZNode = "namespace";
+  // znode of indicating master maintenance mode
+  public static String masterMaintZNode = "masterMaintenance";
 
   // Certain ZooKeeper nodes need to be world-readable
   public static final ArrayList<ACL> CREATOR_ALL_AND_WORLD_READABLE =
@@ -128,8 +137,6 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
   public final static String META_ZNODE_PREFIX = "meta-region-server";
 
   private final Configuration conf;
-
-  private final Exception constructorCaller;
 
   /**
    * Instantiate a ZooKeeper connection and watcher.
@@ -158,13 +165,6 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
       Abortable abortable, boolean canCreateBaseZNode)
   throws IOException, ZooKeeperConnectionException {
     this.conf = conf;
-    // Capture a stack trace now.  Will print it out later if problem so we can
-    // distingush amongst the myriad ZKWs.
-    try {
-      throw new Exception("ZKW CONSTRUCTOR STACK TRACE FOR DEBUGGING");
-    } catch (Exception e) {
-      this.constructorCaller = e;
-    }
     this.quorum = ZKConfig.getZKQuorumServersString(conf);
     this.prefix = identifier;
     // Identifier will get the sessionid appended later below down when we
@@ -172,7 +172,9 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
     this.identifier = identifier + "0x0";
     this.abortable = abortable;
     setNodeNames(conf);
-    this.recoverableZooKeeper = ZKUtil.connect(conf, quorum, this, identifier);
+    PendingWatcher pendingWatcher = new PendingWatcher();
+    this.recoverableZooKeeper = ZKUtil.connect(conf, quorum, pendingWatcher, identifier);
+    pendingWatcher.prepare(this);
     if (canCreateBaseZNode) {
       createBaseZNodes();
     }
@@ -192,6 +194,7 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
       ZKUtil.createAndFailSilent(this, backupMasterAddressesZNode);
       ZKUtil.createAndFailSilent(this, tableLockZNode);
       ZKUtil.createAndFailSilent(this, recoveringRegionsZNode);
+      ZKUtil.createAndFailSilent(this, masterMaintZNode);
     } catch (KeeperException e) {
       throw new ZooKeeperConnectionException(
           prefix("Unexpected KeeperException creating base node"), e);
@@ -267,7 +270,11 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
    * @throws IOException
    */
   private boolean isBaseZnodeAclSetup(List<ACL> acls) throws IOException {
-    String superUser = conf.get("hbase.superuser");
+    String[] superUsers = conf.getStrings(Superusers.SUPERUSER_CONF_KEY);
+    // Check whether ACL set for all superusers
+    if (superUsers != null && !checkACLForSuperUsers(superUsers, acls)) {
+      return false;
+    }
 
     // this assumes that current authenticated user is the same as zookeeper client user
     // configured via JAAS
@@ -286,7 +293,7 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
         if (perms != Perms.READ) {
           return false;
         }
-      } else if (superUser != null && new Id("sasl", superUser).equals(id)) {
+      } else if (superUsers != null && isSuperUserId(superUsers, id)) {
         if (perms != Perms.ALL) {
           return false;
         }
@@ -299,6 +306,41 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
       }
     }
     return true;
+  }
+  
+  /*
+   * Validate whether ACL set for all superusers.
+   */
+  private boolean checkACLForSuperUsers(String[] superUsers, List<ACL> acls) {
+    for (String user : superUsers) {
+      boolean hasAccess = false;
+      // TODO: Validate super group members also when ZK supports setting node ACL for groups.
+      if (!user.startsWith(AuthUtil.GROUP_PREFIX)) {
+        for (ACL acl : acls) {
+          if (user.equals(acl.getId().getId()) && acl.getPerms() == Perms.ALL) {
+            hasAccess = true;
+            break;
+          }
+        }
+        if (!hasAccess) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+  
+  /*
+   * Validate whether ACL ID is superuser.
+   */
+  public static boolean isSuperUserId(String[] superUsers, Id id) {
+    for (String user : superUsers) {
+      // TODO: Validate super group members also when ZK supports setting node ACL for groups.
+      if (!user.startsWith(AuthUtil.GROUP_PREFIX) && new Id("sasl", user).equals(id)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   @Override
@@ -351,12 +393,17 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
         conf.get("zookeeper.znode.splitlog", HConstants.SPLIT_LOGDIR_NAME));
     balancerZNode = ZKUtil.joinZNode(baseZNode,
         conf.get("zookeeper.znode.balancer", "balancer"));
+    regionNormalizerZNode = ZKUtil.joinZNode(baseZNode,
+      conf.get("zookeeper.znode.regionNormalizer", "normalizer"));
+    switchZNode = ZKUtil.joinZNode(baseZNode, conf.get("zookeeper.znode.switch", "switch"));
     tableLockZNode = ZKUtil.joinZNode(baseZNode,
         conf.get("zookeeper.znode.tableLock", "table-lock"));
     recoveringRegionsZNode = ZKUtil.joinZNode(baseZNode,
         conf.get("zookeeper.znode.recovering.regions", "recovering-regions"));
     namespaceZNode = ZKUtil.joinZNode(baseZNode,
         conf.get("zookeeper.znode.namespace", "namespace"));
+    masterMaintZNode = ZKUtil.joinZNode(baseZNode,
+      conf.get("zookeeper.znode.masterMaintenance", "master-maintenance"));
   }
 
   /**
@@ -391,9 +438,11 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
   public List<String> getMetaReplicaNodes() throws KeeperException {
     List<String> childrenOfBaseNode = ZKUtil.listChildrenNoWatch(this, baseZNode);
     List<String> metaReplicaNodes = new ArrayList<String>(2);
-    String pattern = conf.get("zookeeper.znode.metaserver","meta-region-server");
-    for (String child : childrenOfBaseNode) {
-      if (child.startsWith(pattern)) metaReplicaNodes.add(child);
+    if (childrenOfBaseNode != null) {
+      String pattern = conf.get("zookeeper.znode.metaserver","meta-region-server");
+      for (String child : childrenOfBaseNode) {
+        if (child.startsWith(pattern)) metaReplicaNodes.add(child);
+      }
     }
     return metaReplicaNodes;
   }
@@ -565,27 +614,6 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
   private void connectionEvent(WatchedEvent event) {
     switch(event.getState()) {
       case SyncConnected:
-        // Now, this callback can be invoked before the this.zookeeper is set.
-        // Wait a little while.
-        long finished = System.currentTimeMillis() +
-          this.conf.getLong("hbase.zookeeper.watcher.sync.connected.wait", 2000);
-        while (System.currentTimeMillis() < finished) {
-          try {
-            Thread.sleep(1);
-          } catch (InterruptedException e) {
-            LOG.warn("Interrupted while sleeping");
-            throw new RuntimeException("Interrupted while waiting for" +
-                " recoverableZooKeeper is set");
-          }
-          if (this.recoverableZooKeeper != null) break;
-        }
-
-        if (this.recoverableZooKeeper == null) {
-          LOG.error("ZK is null on connection event -- see stack trace " +
-            "for the stack trace when constructor was called on this zkw",
-            this.constructorCaller);
-          throw new NullPointerException("ZK is null");
-        }
         this.identifier = this.prefix + "-0x" +
           Long.toHexString(this.recoverableZooKeeper.getSessionId());
         // Update our identifier.  Otherwise ignore.
@@ -675,9 +703,7 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
   @Override
   public void close() {
     try {
-      if (recoverableZooKeeper != null) {
-        recoverableZooKeeper.close();
-      }
+      recoverableZooKeeper.close();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     }
@@ -705,4 +731,17 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
     return this.masterAddressZNode;
   }
 
+  /**
+   * @return ZooKeeper znode for region normalizer state
+   */
+  public String getRegionNormalizerZNode() {
+    return regionNormalizerZNode;
+  }
+
+  /**
+   *  @return ZK node for switch
+   * */
+  public String getSwitchZNode() {
+    return switchZNode;
+  }
 }
