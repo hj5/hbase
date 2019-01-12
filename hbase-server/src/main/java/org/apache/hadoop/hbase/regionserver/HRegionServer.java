@@ -1662,7 +1662,7 @@ public class HRegionServer extends HasThread implements
           continue;
         for (Store s : r.getStores()) {
           try {
-            long multiplier = s.getCompactionCheckMultiplier();
+            long multiplier = s.getCompactionCheckMultiplier();//default=1000
             assert multiplier > 0;
             if (iteration % multiplier != 0) continue;
             if (s.needsCompaction()) {

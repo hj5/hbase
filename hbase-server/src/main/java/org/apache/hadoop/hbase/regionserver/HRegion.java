@@ -280,7 +280,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
 
   // TODO: account for each registered handler in HeapSize computation
   private Map<String, Service> coprocessorServiceHandlers = Maps.newHashMap();
-
+  /** 当前时刻HRegion上MemStore的大小，它是在Put、Append等操作中调用addAndGetGlobalMemstoreSize()方法实时更新的。 */
   public final AtomicLong memstoreSize = new AtomicLong(0);
 
   // Debug possible data loss due to WAL off
@@ -3819,16 +3819,16 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     }
   }
 
-  /*
+  /* 实际上就是检查HRegion的MemStore大小是否超过一定的阈值，如果超过，则会调用requestFlush()方法发起对该HRegion的MemStore进行flush的请求，并抛出RegionTooBusyException异常，阻止该操作继续
    * Check if resources to support an update.
-   *
+   * 检测是否有足够的资源支持一个Put、Append等数据更新操作.如果超过memstore的限制，抛出RegionTooBusyException这个异常，并且期望客户端使用某种补偿进行重试
    * We throw RegionTooBusyException if above memstore limit
    * and expect client to retry using some kind of backoff
   */
   private void checkResources() throws RegionTooBusyException {
     // If catalog region, do not impose resource constraints or block updates.
     if (this.getRegionInfo().isMetaRegion()) return;
-
+    //如果Region当前内存大小超过阈值:memstoreSize是当前时刻HRegion上MemStore的大小，它是在Put、Append等操作中调用addAndGetGlobalMemstoreSize()方法实时更新的。而blockingMemStoreSize是HRegion上设定的MemStore的一个阈值，当MemStore的大小超过这个阈值时，将会阻塞数据更新操作。
     if (this.memstoreSize.get() > this.blockingMemStoreSize) {
       blockedRequestsCount.increment();
       requestFlush();
