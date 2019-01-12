@@ -114,18 +114,18 @@ public abstract class SortedCompactionPolicy extends CompactionPolicy {
    */
   private final Random random = new Random();
 
-  /**
+  /** default=majorCompactionPeriod*(1.5-0.1x)=[24hrs*9.8,24hrs*10.5]，其中x=0~1
    * @param filesToCompact
    * @return When to run next major compaction
    */
   public long getNextMajorCompactTime(final Collection<StoreFile> filesToCompact) {
-    // default = 24hrs
+    // default = 24hrs * 7
     long ret = comConf.getMajorCompactionPeriod();
     if (ret > 0) {
-      // default = 20% = +/- 4.8 hrs
+      // default = 50%
       double jitterPct = comConf.getMajorCompactionJitter();
       if (jitterPct > 0) {
-        long jitter = Math.round(ret * jitterPct);
+        long jitter = Math.round(ret * jitterPct);// default = 24hrs * 7 * 50%
         // deterministic jitter avoids a major compaction storm on restart
         Integer seed = StoreUtils.getDeterministicRandomSeed(filesToCompact);
         if (seed != null) {
@@ -134,7 +134,7 @@ public abstract class SortedCompactionPolicy extends CompactionPolicy {
           synchronized (this) {
             this.random.setSeed(seed);
             rnd = this.random.nextDouble();
-          }
+          }//ret=ret+0.5*ret*(1-2*0.x)=ret*(1+(1-0.2x)/2)=ret*(1.5-0.1x),x=0~1
           ret += jitter - Math.round(2L * jitter * rnd);
         } else {
           ret = 0; // If seed is null, then no storefiles == no major compaction

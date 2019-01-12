@@ -55,7 +55,7 @@ public class RatioBasedCompactionPolicy extends SortedCompactionPolicy {
   public boolean shouldPerformMajorCompaction(final Collection<StoreFile> filesToCompact)
     throws IOException {
     boolean result = false;
-    long mcTime = getNextMajorCompactTime(filesToCompact);
+    long mcTime = getNextMajorCompactTime(filesToCompact);//default=[24hrs*9.8,24hrs*10.5]=majorCompactionPeriod*(1.5-0.1x),x=0~1
     if (filesToCompact == null || filesToCompact.isEmpty() || mcTime == 0) {
       return result;
     }
